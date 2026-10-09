@@ -5,7 +5,7 @@ $pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $pythonPath)) { throw 'Run setup.ps1 first.' }
 try {
     $status = Invoke-RestMethod "http://127.0.0.1:$Port/api/landmarks" -TimeoutSec 2
-    if ($status.schema_version -eq 1 -or $status.status -eq 'starting') {
+    if ($status.schema_version -in @(1, 2) -or $status.status -eq 'starting') {
         Start-Process "http://127.0.0.1:$Port"
         Write-Host "Already running: http://127.0.0.1:$Port"
         exit

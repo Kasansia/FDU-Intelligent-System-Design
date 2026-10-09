@@ -11,8 +11,25 @@ from urllib.parse import urlparse
 import cv2 as cv
 from cv2_enumerate_cameras import enumerate_cameras
 from hand_tracking import ROOT, HandTracker, annotate
+from aruco_tracking import InstrumentTracker, annotate_instrument, unavailable_instrument
+from instrument_coordinates import fuse_instrument_coordinates
 
 LOG = logging.getLogger('hand-tracking')
+CSV_FIELDS = ['frame_id', 'timestamp_unix_s', 'track_id', 'handedness', 'confidence',
+              'node_id', 'node_name', 'x_px', 'y_px', 'z_relative_px',
+              'x_normalized', 'y_normalized', 'z_normalized', 'world_x_m', 'world_y_m', 'world_z_m',
+              'instrument_u', 'instrument_v']
+
+
+def landmark_csv_rows(packet):
+    """Append optional UV columns while preserving all existing column meanings."""
+    for hand in packet['hands']:
+        uv = hand.get('landmarks_instrument_uv')
+        for i, name in enumerate(packet['landmark_names']):
+            yield [packet['frame_id'], packet['timestamp_unix_s'], hand['track_id'],
+                   hand['handedness'], hand['confidence'], i, name, *hand['landmarks_px'][i],
+                   *hand['landmarks_normalized'][i], *hand['landmarks_world_m'][i],
+                   *(uv[i] if uv is not None else ['', ''])]
 
 
 def cameras(backend=cv.CAP_DSHOW):
@@ -25,7 +42,8 @@ class Service:
         self.args = args
         self.lock = threading.RLock()
         self.stop = threading.Event()
-        self.packet = {'hands': [], 'status': 'starting'}
+        self.packet = {'schema_version': 2, 'hands': [], 'status': 'starting',
+                       'instrument': unavailable_instrument()}
         self.jpeg = None
         self.backend_name = None
         self.recording = None
@@ -40,14 +58,12 @@ class Service:
     def set_recording(self, enabled):
         with self.lock:
             if enabled and self.recording is None:
-                folder = ROOT / 'outputs' / time.strftime('%Y%m%d_%H%M%S')
+                folder = ROOT / 'outputs' / (time.strftime('%Y%m%d_%H%M%S') + f'_{time.time_ns() % 1000000000:09d}')
                 folder.mkdir(parents=True, exist_ok=True)
                 json_file = (folder / 'landmarks.jsonl').open('a', encoding='utf-8')
                 csv_file = (folder / 'landmarks.csv').open('a', newline='', encoding='utf-8')
                 writer = csv.writer(csv_file)
-                writer.writerow(['frame_id', 'timestamp_unix_s', 'track_id', 'handedness', 'confidence',
-                                 'node_id', 'node_name', 'x_px', 'y_px', 'z_relative_px',
-                                 'x_normalized', 'y_normalized', 'z_normalized', 'world_x_m', 'world_y_m', 'world_z_m'])
+                writer.writerow(CSV_FIELDS)
                 self.recording = (json_file, csv_file, writer, str(folder))
                 self.last_recording = str(folder)
             elif not enabled and self.recording:
@@ -66,6 +82,7 @@ class Service:
         try:
             cv.setNumThreads(4)
             tracker = HandTracker(self.args.palm_threshold, self.args.hand_threshold, mirror=not self.args.no_mirror)
+            instrument_tracker = InstrumentTracker()
             backends = {'auto': [cv.CAP_DSHOW, cv.CAP_MSMF], 'dshow': [cv.CAP_DSHOW], 'msmf': [cv.CAP_MSMF]}
             frame = None
             for backend in backends[self.args.backend]:
@@ -93,21 +110,30 @@ class Service:
                 captured = time.time()
                 if not ok or frame is None:
                     failed += 1
+                    instrument_tracker.reset()
                     with self.lock:
-                        self.packet = dict(self.packet, status='error', error='Camera frame unavailable', hands=[])
+                        self.packet = dict(self.packet, status='error', error='Camera frame unavailable', hands=[],
+                                           instrument=unavailable_instrument('Camera frame unavailable'))
                         self.jpeg = None
                     if failed >= 30:
                         raise RuntimeError('Camera disconnected or frames unavailable; restart after reconnecting.')
                     self.stop.wait(.1)
                     continue
                 failed = 0
+                vision_started = time.perf_counter()
+                # ArUco must receive raw pixels; HandTracker may mirror its own copy.
+                instrument = instrument_tracker.process(frame)
                 display, packet = tracker.process(frame, captured)
+                packet = fuse_instrument_coordinates(packet, instrument)
+                packet['aruco_ms'] = instrument['aruco_ms']
+                packet['vision_total_ms'] = round((time.perf_counter() - vision_started) * 1000, 2)
                 now = time.perf_counter()
                 instant = 1 / max(now - previous, .0001)
                 fps = instant if not fps else .9 * fps + .1 * instant
                 previous = now
                 packet.update(status='running', fps=round(fps, 1))
-                ok, encoded = cv.imencode('.jpg', annotate(display, packet), [cv.IMWRITE_JPEG_QUALITY, 85])
+                canvas = annotate_instrument(annotate(display, packet), instrument, packet['mirrored'])
+                ok, encoded = cv.imencode('.jpg', canvas, [cv.IMWRITE_JPEG_QUALITY, 85])
                 if not ok:
                     raise RuntimeError('JPEG encoding failed')
                 with self.lock:
@@ -115,17 +141,14 @@ class Service:
                     if self.recording:
                         jf, cf, writer, _ = self.recording
                         jf.write(json.dumps(packet, separators=(',', ':'), allow_nan=False) + '\n')
-                        for hand in packet['hands']:
-                            for i, name in enumerate(packet['landmark_names']):
-                                writer.writerow([packet['frame_id'], captured, hand['track_id'], hand['handedness'],
-                                                 hand['confidence'], i, name, *hand['landmarks_px'][i],
-                                                 *hand['landmarks_normalized'][i], *hand['landmarks_world_m'][i]])
+                        writer.writerows(landmark_csv_rows(packet))
                         jf.flush()
                         cf.flush()
         except Exception as exc:
             LOG.exception('Camera worker failed')
             with self.lock:
-                self.packet = dict(self.packet, status='error', error=str(exc), hands=[])
+                self.packet = dict(self.packet, status='error', error=str(exc), hands=[],
+                                   instrument=unavailable_instrument('Camera worker failed'))
                 self.jpeg = None
         finally:
             if cap is not None:

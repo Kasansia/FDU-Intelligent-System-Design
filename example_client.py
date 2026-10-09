@@ -16,6 +16,13 @@ def main():
             for hand in packet['hands']:
                 fingertip = hand['landmarks_normalized'][8]
                 print(packet['frame_id'], hand['handedness'], hand['track_id'], 'index tip:', fingertip)
+                uv = hand.get('landmarks_instrument_uv')
+                instrument = packet.get('instrument', {})
+                if uv is not None and instrument.get('status') in ('valid', 'held'):
+                    print('  instrument index tip (u, v):', uv[8],
+                          'status:', instrument['status'], 'H age:', instrument.get('homography_age_s'))
+                else:
+                    print('  instrument unavailable')
         time.sleep(.02)
 
 
