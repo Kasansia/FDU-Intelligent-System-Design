@@ -46,6 +46,8 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(board.to_dict(), before)
         data = InstrumentPreset.default().to_dict()
         for change in ({'axis': [[0, 0], [0, 0]]}, {'chords': {'D': [[0, 0], [1, 0], [0, 1]]}},
-                       {'strum': [[0, 0], [1, 1], [1, 0], [0, 1]]}, {'interaction': {'cooldown_s': -1}}):
+                       {'strum': [[0, 0], [1, 1], [1, 0], [0, 1]]}, {'interaction': {'cooldown_s': -1}},
+                       {'chord_frame': [[0, 0], [1, 0], [0, 1]]},
+                       {'strum_frame': [[0, 0], [1, 1], [1, 0], [0, 1]]}):
             with self.assertRaises(ValueError):
                 InstrumentPreset.from_dict(dict(data, **change))

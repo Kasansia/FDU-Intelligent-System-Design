@@ -14,7 +14,7 @@ from pipeline import PerceptionPipeline, annotate_instrument
 from instrument_geometry import InstrumentLayout, legacy_packet
 from aruco_tracking import ArucoBoardTracker, TrackingConfig
 from board_definition import BoardDefinition
-from board_calibration import CalibrationSessions
+from board_calibration import CalibrationSessions, calibrated_preset_path
 from instrument_preset import InstrumentPreset
 from instrument_logic import InstrumentLogic, InteractionConfig
 from audio_engine import AudioEngine, MockAudioBackend, SoundDeviceBackend
@@ -116,9 +116,11 @@ class Service:
         cap = None
         try:
             cv.setNumThreads(4)
-            preset = InstrumentPreset.load(self.args.preset) if self.args.preset else InstrumentPreset.default()
-            layout = InstrumentLayout(flip_u=self.args.layout == 'flip-u', preset=preset)
             board = BoardDefinition.load(self.args.board) if self.args.board else None
+            companion = calibrated_preset_path(board, self.args.board) if board else None
+            preset_path = self.args.preset or companion
+            preset = InstrumentPreset.load(preset_path) if preset_path else InstrumentPreset.default()
+            layout = InstrumentLayout(flip_u=self.args.layout == 'flip-u', preset=preset)
             tracking_data = {}
             if self.args.tracking_config:
                 with open(self.args.tracking_config, encoding='utf-8') as file:
@@ -127,11 +129,7 @@ class Service:
                 tracking_data['hold_s'] = self.args.board_hold
             tracking = TrackingConfig(**tracking_data)
             board_tracker = ArucoBoardTracker(board=board, learn_legacy=True, config=tracking)
-            config_data = dict(preset.interaction)
-            if self.args.interaction_config:
-                with open(self.args.interaction_config, encoding='utf-8') as file:
-                    config_data.update(json.load(file))
-            config = InteractionConfig(**config_data)
+            config = self.interaction_config(preset)
             if self.args.demo:
                 from synthetic_input import SyntheticHandTracker, board_image
                 tracker = SyntheticHandTracker(mirror=not self.args.no_mirror, layout=layout)
@@ -179,7 +177,7 @@ class Service:
                     fps = instant if not fps else .9*fps + .1*instant
                     previous = now
                     packet.update(fps=round(fps, 1))
-                    self.publish(annotate_instrument(display, packet, layout), packet, frame)
+                    self.publish(annotate_instrument(display, packet, self.pipeline.layout), packet, frame)
                 if self.args.demo:
                     self.stop.wait(1/30)
             with self.lock:
@@ -196,6 +194,13 @@ class Service:
                 self.audio.close()
             self.set_recording(False)
 
+    def interaction_config(self, preset):
+        data = dict(preset.interaction)
+        if self.args.interaction_config:
+            with open(self.args.interaction_config, encoding='utf-8') as file:
+                data.update(json.load(file))
+        return InteractionConfig(**data)
+
     def calibration_request(self, action, body):
         with self.pipeline_lock:
             if action == 'capture':
@@ -211,13 +216,21 @@ class Service:
                 if self.pipeline is None:
                     raise ValueError('Pipeline not ready')
                 return self.calibration.preview(body.get('session_id'), body.get('points_raw'),
-                                                body.get('board_id'), self.pipeline.layout)
+                                                body.get('board_id'), self.pipeline.layout, body.get('regions_raw'))
             if action == 'save':
                 board, path = self.calibration.save(body.get('session_id'), body.get('preview_token'))
+                preset_path = calibrated_preset_path(board, path)
+                if preset_path is not None:
+                    preset = InstrumentPreset.load(preset_path)
+                    layout = InstrumentLayout(preset=preset)
+                    config = self.interaction_config(preset)
+                    self.pipeline.layout = self.pipeline.logic.layout = layout
+                    self.pipeline.logic.config = config
                 self.pipeline.board = ArucoBoardTracker(board=board, config=self.pipeline.board.config)
                 self.pipeline.logic.invalidate('board_changed')
                 self.calibrating = False
-                return dict(saved=str(path.relative_to(ROOT)), board_id=board.board_id, active=True)
+                return dict(saved=str(path.relative_to(ROOT)), board_id=board.board_id, active=True,
+                            preset_saved=None if preset_path is None else str(preset_path.relative_to(ROOT)))
             if action == 'cancel':
                 self.calibration.cancel(body.get('session_id'))
                 self.calibrating = False

@@ -14,6 +14,8 @@ class InstrumentPreset:
     axis: list
     interaction: dict = field(default_factory=dict)
     schema_version: int = 1
+    chord_frame: object = None
+    strum_frame: object = None
 
     def __post_init__(self):
         safe_name(self.preset_id)
@@ -29,6 +31,14 @@ class InstrumentPreset:
             raise ValueError('axis must contain two different finite points')
         if not isinstance(self.interaction, dict):
             raise ValueError('interaction must be an object')
+        for name in ('chord_frame', 'strum_frame'):
+            value = getattr(self, name)
+            if value is not None:
+                points = polygon(value, name, convex=True)
+                if len(points) != 4:
+                    raise ValueError(f'{name} must contain four ordered corners')
+                frame_transform(points)  # Reject singular/projectively unstable frames at load.
+                object.__setattr__(self, name, points.tolist())
         # Validate fields with the existing action state machine, without importing it during module initialization.
         from instrument_logic import InteractionConfig
         try:
@@ -52,8 +62,22 @@ class InstrumentPreset:
         return cls.load(Path(__file__).resolve().parent/'config/presets/guitar.json')
 
     def to_dict(self):
-        return dict(schema_version=1, preset_id=self.preset_id, chords=self.chords,
-                    strum=self.strum, axis=self.axis, interaction=self.interaction)
+        result = dict(schema_version=1, preset_id=self.preset_id, chords=self.chords,
+                      strum=self.strum, axis=self.axis, interaction=self.interaction)
+        for name in ('chord_frame', 'strum_frame'):
+            if getattr(self, name) is not None:
+                result[name] = getattr(self, name)
+        return result
+
+
+def frame_transform(points):
+    """Plane UV -> region-local unit square; corner order defines playing direction."""
+    matrix = cv.getPerspectiveTransform(np.float32(points), np.float32([[0, 0], [1, 0], [1, 1], [0, 1]]))
+    denominator = np.column_stack((points, np.ones(4))) @ matrix[2]
+    if (not np.isfinite(matrix).all() or abs(np.linalg.det(matrix)) < 1e-12 or
+            denominator.min()*denominator.max() <= 0):
+        raise ValueError('Unstable region coordinate frame')
+    return matrix
 
 
 def signed_distance(point, points):

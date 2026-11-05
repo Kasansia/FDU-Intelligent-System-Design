@@ -13,7 +13,24 @@ import cv2 as cv
 import numpy as np
 from aruco_tracking import ArucoBoardTracker
 from board_definition import BoardDefinition, polygon, safe_name
-from instrument_geometry import project, raw_to_display_xy
+from instrument_geometry import CHORDS, InstrumentLayout, project, raw_to_display_xy
+from instrument_preset import InstrumentPreset, frame_transform
+
+
+def calibrated_preset_path(board, board_path):
+    """Only a safe companion name, never a client-supplied filesystem path."""
+    name = board.metadata.get('calibration_preset')
+    return None if name is None else Path(board_path).parent.parent/'presets'/(safe_name(name)+'.json')
+
+
+def region_preset(name, chord, strum):
+    """Four chord cells and a directed center line in each selected region's frame."""
+    chord_inverse, strum_inverse = np.linalg.inv(frame_transform(chord)), np.linalg.inv(frame_transform(strum))
+    chords = {key: project([[i/4, 0], [(i+1)/4, 0], [(i+1)/4, 1], [i/4, 1]], chord_inverse).tolist()
+              for i, key in enumerate(CHORDS)}
+    axis = project([[0, .5], [1, .5]], strum_inverse).tolist()
+    return InstrumentPreset(name, chords, np.asarray(strum).tolist(), axis,
+                            chord_frame=np.asarray(chord).tolist(), strum_frame=np.asarray(strum).tolist())
 
 
 def encode_preview(image):
@@ -71,36 +88,66 @@ class CalibrationSessions:
                 self.session = None
             return self.session is not None
 
-    def preview(self, sid, points_raw, board_id, layout):
+    def preview(self, sid, points_raw, board_id, layout, regions_raw=None):
         with self.lock:
             s = self._get(sid)
             s['preview'] = None
             safe_name(board_id)
             if (self.directory/(board_id+'.json')).exists():
                 raise ValueError('Board name already exists; choose a new name')
-            p = polygon(points_raw, 'reference points', convex=True)
             height, width = s['raw'].shape[:2]
-            if len(p) != 4 or cv.contourArea(np.float32(p), oriented=True) < 400:
-                raise ValueError('Choose TL → TR → BR → BL around a non-degenerate reference quadrilateral')
-            if np.any(p < 0) or np.any(p[:, 0] > width-1) or np.any(p[:, 1] > height-1):
-                raise ValueError('Reference point is outside the frozen image')
-            edges = np.roll(p, -1, axis=0)-p
-            lengths = np.linalg.norm(edges, axis=1)
-            crosses = edges[:, 0]*np.roll(edges, -1, axis=0)[:, 1]-edges[:, 1]*np.roll(edges, -1, axis=0)[:, 0]
-            if lengths.min() < 20 or np.min(np.abs(crosses)/(lengths*np.roll(lengths, -1))) < .04:
-                raise ValueError('Reference quadrilateral is too narrow or nearly collinear')
+            def quad(value, label):
+                p = polygon(value, label, convex=True)
+                if len(p) != 4 or abs(cv.contourArea(np.float32(p))) < 400:
+                    raise ValueError(f'{label}: select four corners around an area of at least 400 pixels')
+                if np.any(p < 0) or np.any(p[:, 0] > width-1) or np.any(p[:, 1] > height-1):
+                    raise ValueError(f'{label}: point is outside the frozen image')
+                edges = np.roll(p, -1, axis=0)-p
+                lengths = np.linalg.norm(edges, axis=1)
+                crosses = edges[:, 0]*np.roll(edges, -1, axis=0)[:, 1]-edges[:, 1]*np.roll(edges, -1, axis=0)[:, 0]
+                if lengths.min() < 20 or np.min(np.abs(crosses)/(lengths*np.roll(lengths, -1))) < .04:
+                    raise ValueError(f'{label}: region is too narrow or nearly collinear')
+                return p
+            selected = None
+            if regions_raw is not None:
+                if not isinstance(regions_raw, dict) or set(regions_raw) != {'chord', 'strum'} or points_raw is not None:
+                    raise ValueError('Supply exactly chord and strum regions, without reference points')
+                selected = {key: quad(regions_raw[key], key) for key in ('chord', 'strum')}
+                if cv.intersectConvexConvex(np.float32(selected['chord']), np.float32(selected['strum']))[0] > 1e-4:
+                    raise ValueError('Chord and strum regions must not overlap')
+                # Keep physical marker winding positive even on a mirrored canvas.
+                p = selected['chord'].copy()
+                if cv.contourArea(np.float32(p), oriented=True) < 0:
+                    p = p[[1, 0, 3, 2]]
+                if (self.directory.parent/'presets'/(board_id+'.json')).exists():
+                    raise ValueError('Preset name already exists; choose a new name')
+            else:
+                p = quad(points_raw, 'reference points')
+                if cv.contourArea(np.float32(p), oriented=True) < 0:
+                    raise ValueError('Choose physical TL → TR → BR → BL reference points')
             unit = np.float32([[0, 0], [1, 0], [1, 1], [0, 1]])
             H = cv.getPerspectiveTransform(np.float32(p), unit)
+            preset, outline = None, None
+            if selected is not None:
+                regions_uv = {key: project(value, H) for key, value in selected.items()}
+                if any(value is None for value in regions_uv.values()):
+                    raise ValueError('Selected regions cross the projective horizon')
+                preset = region_preset(board_id, regions_uv['chord'], regions_uv['strum'])
+                layout = InstrumentLayout(preset=preset)
+                outline = cv.convexHull(np.float32(np.vstack(list(regions_uv.values())))).reshape(-1, 2).tolist()
             mapped = {}
             for marker in s['markers']:
                 uv = project(marker['corners_px_raw'], H)
                 if uv is None:
                     raise ValueError('Reference plane has an unstable projective horizon')
                 mapped[marker['id']] = {'corners_uv': uv.tolist()}
-            board = BoardDefinition(board_id, mapped, dictionary=s['dictionary'], metadata={
-                'method': 'frozen_frame_four_reference_points', 'source_frame_id': s['frame_id'],
+            metadata = {
+                'method': 'frozen_frame_two_regions' if selected is not None else 'frozen_frame_four_reference_points', 'source_frame_id': s['frame_id'],
                 'timestamp_unix_s': s['timestamp_unix_s'], 'reference_points_px_raw': p.tolist(),
-                'coordinate_note': 'Projective UV; no metric length or 3D contact claim'})
+                'coordinate_note': 'Projective UV; no metric length or 3D contact claim'}
+            if preset is not None:
+                metadata.update(calibration_preset=preset.preset_id, regions_px_raw={k: v.tolist() for k, v in selected.items()})
+            board = BoardDefinition(board_id, mapped, dictionary=s['dictionary'], outline_uv=outline, metadata=metadata)
             class FrozenDetector:
                 def detectMarkers(self, unused):
                     return ([np.float32(m['corners_px_raw']).reshape(1, 4, 2) for m in s['markers']],
@@ -110,18 +157,22 @@ class CalibrationSessions:
                 raise ValueError('Calibration quality insufficient: '+result['reason'])
             display = cv.flip(s['raw'], 1) if s['mirrored'] else s['raw'].copy()
             regions = layout.regions()
-            shapes = dict(regions['chords'], strum=regions['strum'], axis=regions['axis'], reference=unit.tolist())
+            shapes = dict(regions['chords'], strum=regions['strum'], axis=regions['axis'])
+            if selected is None:
+                shapes['reference'] = unit.tolist()
             inverse = np.linalg.inv(H)
             for name, uv in shapes.items():
                 raw = project(uv, inverse)
                 if raw is None:
                     raise ValueError('Preset lies across the projective horizon')
                 xy = np.rint(np.clip(raw_to_display_xy(raw, width, s['mirrored']), -1e6, 1e6)).astype(np.int32)
-                cv.polylines(display, [xy], name != 'axis', (50, 200, 120), 2, cv.LINE_AA)
-                cv.putText(display, name, tuple(xy[0]), cv.FONT_HERSHEY_SIMPLEX, .5, (30, 130, 40), 2)
+                color = (78, 174, 243) if name in ('strum', 'axis') else (50, 200, 120)
+                cv.polylines(display, [xy], name != 'axis', color, 2, cv.LINE_AA)
+                cv.putText(display, name, tuple(xy[0]), cv.FONT_HERSHEY_SIMPLEX, .5, color, 2)
             token = secrets.token_urlsafe(24)
-            s['preview'] = dict(token=token, board=board)
+            s['preview'] = dict(token=token, board=board, preset=preset)
             return dict(session_id=sid, preview_token=token, board=board.to_dict(), pose_quality=result['pose_quality'],
+                        preset=None if preset is None else preset.to_dict(),
                         image_base64=encode_preview(display))
 
     def save(self, sid, token):
@@ -129,27 +180,44 @@ class CalibrationSessions:
             s = self._get(sid)
             preview = s['preview']
             if preview is None or not secrets.compare_digest(str(token), preview['token']):
-                raise ValueError('Preview the current four points before saving')
+                raise ValueError('Preview the current selection before saving')
             board = preview['board']
-            self.directory.mkdir(parents=True, exist_ok=True)
             target = self.directory/(safe_name(board.board_id)+'.json')
-            temporary = None
+            preset = preview['preset']
+            preset_path = calibrated_preset_path(board, target) if preset is not None else None
+            published_preset = False
             try:
-                with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=self.directory, suffix='.tmp', delete=False) as stream:
-                    temporary = Path(stream.name)
-                    json.dump(board.to_dict(), stream, ensure_ascii=False, indent=2, allow_nan=False)
-                    stream.write('\n')
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                # Atomic publication without overwrite, including concurrent requests and symlinks.
-                os.link(temporary, target)
+                if preset_path is not None:
+                    self._publish(preset_path, preset.to_dict())
+                    published_preset = True
+                # Publish the board last so it never references a missing preset.
+                self._publish(target, board.to_dict())
             except FileExistsError as exc:
-                raise ValueError('Board name already exists; capture/preview with a new name') from exc
-            finally:
-                if temporary is not None:
-                    temporary.unlink(missing_ok=True)
+                if published_preset:
+                    preset_path.unlink()
+                raise ValueError('Board or preset name already exists; choose a new name') from exc
+            except OSError:
+                if published_preset:
+                    preset_path.unlink()
+                raise
             self.session = None
             return board, target
+
+    @staticmethod
+    def _publish(target, value):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=target.parent, suffix='.tmp', delete=False) as stream:
+                temporary = Path(stream.name)
+                json.dump(value, stream, ensure_ascii=False, indent=2, allow_nan=False)
+                stream.write('\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(temporary, target)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def cancel(self, sid):
         with self.lock:

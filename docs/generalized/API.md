@@ -25,6 +25,13 @@ margin uses signed polygon distance; overlapping regions use insertion order.
 Directed-line normal is (-dy, dx), normalized in UV. Positive crossing is down.
 The `flip-u` compatibility transform reflects regions and this normal together.
 
+Optional `chord_frame` and `strum_frame` are convex four-corner polygons in plane
+UV, ordered as local (0,0)/(1,0)/(1,1)/(0,1). When present, chord margins and strum
+distance/speed/jump thresholds use the corresponding region-local unit square.
+Published landmarks and display polygons remain in board UV. Legacy presets
+without these fields retain their original UV units. The compatibility field
+`strum_speed_uv_s` uses region units/s when `strum_frame` is supplied.
+
 ## HTTP compatibility and projection semantics
 
 | Endpoint | Contract |
@@ -110,13 +117,34 @@ are UTF-8 HTTP 400; I/O failures HTTP 500; unauthorized control HTTP 403.
    At least two distinct sufficiently large/contrasty/sharp markers are required.
 2. Browser maps canvas pointer positions through object-fit containment and
    inverse reflection to original raw pixels. Letterbox clicks are ignored.
-   `POST /api/calibration/preview {session_id, board_id, points_raw:[[x,y],...]}`.
-   Four raw points are physical TL/TR/BR/BL, defining (0,0)/(1,0)/(1,1)/(0,1).
-   Response: validated board, pose_quality, backend-rendered preview JPEG and
-   preview_token. Preview checks geometric validity and prospective fit quality.
+   The UI sends `POST /api/calibration/preview {session_id, board_id,
+   regions_raw:{chord:[[x,y],...], strum:[[x,y],...]}}`. Each region has four
+   ordered corners defining its playing direction, including reflected winding
+   on a mirrored canvas. Rectangles can be dragged in any direction; handles
+   and four-point selection support perspective quadrilaterals. Both regions
+   must lie on the same rigid plane, must not overlap, and must pass minimum
+   area/edge/convexity checks. The chord quadrilateral establishes a positively
+   oriented board frame; its four chord cells and the strum center line are
+   stored separately in a generated preset with local coordinate frames.
+   The board support outline includes both selected regions for pose checks.
+   Response: board, preset, pose_quality, backend-rendered preview JPEG and
+   preview_token. Invalid previews invalidate previous tokens.
+   Legacy callers may instead send `points_raw:[[x,y],...]` in physical
+   TL/TR/BR/BL order; this retains the existing layout and returns preset=null.
+   Supplying both reference points and regions is rejected.
 3. `POST /api/calibration/save {session_id, preview_token}` atomically publishes
-   `config/boards/<board_id>.json` without overwrite, returns saved/board_id/active.
-   The worker switches board at a frame boundary and invalidates action history.
+   each file without overwrite, returns saved/preset_saved/board_id/active.
+   New region selections write `config/presets/<board_id>.json` first and
+   `config/boards/<board_id>.json` last. A board publication failure rolls back
+   the newly created preset; existing files are never overwritten. An abrupt
+   process termination between publications can leave an unreferenced preset,
+   but a published board always has its companion. Board metadata stores the
+   safe `calibration_preset` name. `--board` resolves it from the sibling
+   `presets/` directory unless an explicit `--preset` is supplied. Keep both
+   files when copying a calibration. Legacy saves return preset_saved=null.
+   The worker switches board, layout and interaction config at a frame boundary,
+   clears action history, and preserves the monotonic audio event ID sequence.
+   New manual selections use exactly the drawn positions (flip_u=false).
 4. `POST /api/calibration/cancel {session_id}` releases the frozen frame; current
    board remains. Edits invalidate the browser preview token until another preview.
 

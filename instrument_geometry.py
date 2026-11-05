@@ -6,7 +6,7 @@ UV is a 2-D image projection, not a contact or depth measurement.
 from dataclasses import dataclass
 from copy import deepcopy
 import numpy as np
-from instrument_preset import InstrumentPreset, signed_distance
+from instrument_preset import InstrumentPreset, signed_distance, frame_transform
 
 CHORDS = ('C', 'G', 'Am', 'F')
 BOARD_UV = np.float32(((0, 0), (1, 0), (0, 1), (1, 1)))
@@ -79,30 +79,52 @@ class InstrumentLayout:
                     {name: rect(self.chord_u[0]+i*width, self.chord_u[0]+(i+1)*width, *self.chord_v) for i, name in enumerate(CHORDS)},
                     rect(*self.strum_u, *self.strum_v), [[u, self.axis_v] for u in self.strum_u])
             object.__setattr__(self, 'preset', preset)
+        chord_transform = None if self.preset.chord_frame is None else frame_transform(self.preset.chord_frame)
+        strum_transform = None if self.preset.strum_frame is None else frame_transform(self.preset.strum_frame)
+        object.__setattr__(self, '_chord_transform', chord_transform)
+        object.__setattr__(self, '_strum_transform', strum_transform)
+        chords = {name: points if chord_transform is None else project(points, chord_transform)
+                  for name, points in self.preset.chords.items()}
+        axis = self.preset.axis if strum_transform is None else project(self.preset.axis, strum_transform)
+        if any(points is None for points in chords.values()) or axis is None:
+            raise ValueError('Region or axis crosses its local projective horizon')
+        object.__setattr__(self, '_chords', chords)
+        object.__setattr__(self, '_axis', np.asarray(axis))
 
     def local(self, point):
         u, v = point
         return (1 - u if self.flip_u else u), v
 
     def chord_at(self, point, margin=0.0):
-        for name, points in self.preset.chords.items():
-            if signed_distance(self.local(point), points) >= margin-1e-8:
+        point = self._region_point(point, self._chord_transform)
+        for name, points in self._chords.items():
+            if signed_distance(point, points) >= margin-1e-8:
                 return name
         return None
 
     def contains_chord(self, chord, point, margin=0.):
-        points = self.preset.chords.get(chord)
-        return points is not None and signed_distance(self.local(point), points) >= margin-1e-8
+        points = self._chords.get(chord)
+        return points is not None and signed_distance(self._region_point(point, self._chord_transform), points) >= margin-1e-8
+
+    def _region_point(self, point, matrix):
+        point = self.local(point)
+        if matrix is None:
+            return np.asarray(point)
+        mapped = project([point], matrix)
+        return np.full(2, np.nan) if mapped is None else mapped[0]
+
+    def strum_motion_point(self, point):
+        return self._region_point(point, self._strum_transform)
 
     def in_strum_band(self, point):
         return signed_distance(self.local(point), self.preset.strum) >= -1e-8
 
     def strum_coordinate(self, point):
         """Signed distance along the directed axis normal; .5 keeps v-threshold compatibility."""
-        a, b = np.asarray(self.preset.axis)
+        a, b = self._axis
         tangent = b-a
         normal = np.array([-tangent[1], tangent[0]])/np.linalg.norm(tangent)
-        return .5+float(np.dot(np.asarray(self.local(point))-a, normal))
+        return .5+float(np.dot(self.strum_motion_point(point)-a, normal))
 
     def _polygon(self, x0, x1, y0, y1):
         return [list(self.local(p)) for p in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]

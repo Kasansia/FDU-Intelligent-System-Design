@@ -163,6 +163,10 @@ class InstrumentLogic:
             self._reset_strum()
             return self._state('fresh_chord_and_strum_hand_required'), []
         coordinate = self.layout.strum_coordinate(point)
+        point = self.layout.strum_motion_point(point)
+        if not np.isfinite(point).all() or not math.isfinite(coordinate):
+            self._reset_strum()
+            return self._state('invalid_region_projection'), []
         tid, side = right['track_id'], self._side(coordinate)
         previous = self.previous
         self.previous = (point, now, tid)

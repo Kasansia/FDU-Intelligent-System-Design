@@ -24,13 +24,14 @@
 <div class="hands" id="hands">等待手部</div>
 <label class="hint"><input id="recordVideo" type="checkbox"> 实验采集：同时保存原始图像</label>
 <div class="controls"><button id="record">开始录制</button><button id="stop" class="secondary">停止服务</button></div>
-<button id="calibrate" class="secondary">板面标定</button>
+<button id="calibrate" class="secondary">划定演奏区域</button>
+<p id="calibrationSaved" class="hint" role="status" hidden></p>
 <p id="qualityReason" class="hint"></p>
 <p id="recording" class="hint">录制节点、板面和事件；不保存视频。</p><div id="error" role="status" class="error"></div>
 </aside>
 </section>
 <section class="lower">
-<div class="guide"><div class="section-label">03 / 持板准备</div><div class="guide-content"><div class="marker-layout" aria-label="旧版免标定布局，上排 0 1，下排 2 3"><b>0</b><b>1</b><span>旧版免标定布局</span><b>2</b><b>3</b></div><div><h2>自由贴标，一次标定。</h2><p>DICT_4X4_50 · 不同 ID 分散贴在同一刚性平面，保留白边，可自由旋转。点击“板面标定”建立坐标；绿色区域选和弦，琥珀色区域扫弦。</p><p>UV 表示二维投影，不代表手指接触板面。可用 <code>--preset</code> 加载演奏区域，用 <code>--layout flip-u</code> 翻转区域。</p></div></div></div>
+<div class="guide"><div class="section-label">03 / 持板准备</div><div class="guide-content"><div class="marker-layout" aria-label="旧版免标定布局，上排 0 1，下排 2 3"><b>0</b><b>1</b><span>旧版免标定布局</span><b>2</b><b>3</b></div><div><h2>自由贴标，分别划定两个区域。</h2><p>DICT_4X4_50 · 不同 ID 分散贴在同一刚性平面，保留白边，可自由旋转。点击“划定演奏区域”，分别框选和弦区和拨弦区；保存后随板面一起移动。</p><p>绿色区域选和弦，琥珀色区域扫弦。UV 表示二维投影，不代表手指接触板面。</p></div></div></div>
 <div class="events"><div class="section-label">04 / 事件记录 <span>仅展示，不重播</span></div><ol id="events"><li>尚无扫弦事件</li></ol></div>
 </section>
 <details id="debug"><summary>调试面板 <span>21 点坐标 · 局部三维投影 · 原始 API</span></summary><div class="debug-body">
@@ -43,13 +44,15 @@
 <footer><span>本地视觉 · 本地音频 · 无需云端推理</span><span>FDU / MOTIONMUSE</span></footer>
 </main>
 <dialog id="calibrationDialog" aria-labelledby="calibrationTitle">
-<h2 id="calibrationTitle">板面标定</h2>
-<p>捕获后画面冻结，演奏暂停。按板面自身的左上 → 右上 → 右下 → 左下选择四个参考点。镜像画面中仍按物理板面的顺序选点。</p>
-<p class="hint">参考点定义 (0,0)、(1,0)、(1,1)、(0,1)，不要求位于板子外轮廓。请让至少两枚分散的标记清晰可见。</p>
-<div class="calibration-image"><canvas id="calibrationCanvas" width="640" height="480" aria-label="冻结图像，点击四个参考点"></canvas></div>
+<h2 id="calibrationTitle">划定和弦区与拨弦区</h2>
+<p>先捕获画面，再在同一块板面上分别划定两个区域。和弦区分成 C / G / Am / F 四格；拨弦区中线用于上下扫弦。</p>
+<p class="hint">捕获期间暂停演奏。请让至少两枚分散的标记清晰可见。可拖出矩形，再拖动角点贴合倾斜的板面；镜像画面也直接按看到的位置操作。</p>
+<div class="calibration-toolbar"><div class="region-tabs" role="group" aria-label="选择绘制区域"><button id="selectChordRegion" class="secondary" aria-pressed="true">1 · 和弦区</button><button id="selectStrumRegion" class="secondary" aria-pressed="false">2 · 拨弦区</button></div><label>划定方式 <select id="calibrationMode"><option value="rectangle">拖拽矩形</option><option value="corners">依次点选四角</option></select></label></div>
+<p id="calibrationInstruction" class="hint"></p>
+<div class="calibration-image"><canvas id="calibrationCanvas" width="640" height="480" aria-label="冻结图像，分别划定和弦区和拨弦区"></canvas></div>
 <p id="calibrationCount" aria-live="polite"></p>
 <label>板面名称 <input id="boardName" value="my_board" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" autocomplete="off"></label>
-<div class="calibration-controls"><button id="calibrationCapture">捕获 / 重新捕获</button><button id="calibrationUndo" class="secondary">撤销一点</button><button id="calibrationReset" class="secondary">重选四点</button><button id="calibrationPreview">预览</button><button id="calibrationSave">确认保存并启用</button><button id="calibrationCancel" class="secondary">取消</button></div>
+<div class="calibration-controls"><button id="calibrationCapture">捕获 / 重新捕获</button><button id="calibrationUndo" class="secondary">撤销</button><button id="calibrationReset" class="secondary">重选当前区域</button><button id="calibrationPreview">预览</button><button id="calibrationSave">确认保存并启用</button><button id="calibrationCancel" class="secondary">取消</button></div>
 <p id="calibrationError" class="error" role="status"></p>
 </dialog>
 </body></html>
