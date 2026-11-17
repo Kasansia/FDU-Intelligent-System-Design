@@ -17,7 +17,7 @@ upper bound (50 by default). Single-marker definitions load but cannot produce v
 Overlapping markers, self intersections, unknown dictionary, duplicate JSON keys,
 out-of-range IDs and numerically degenerate configurations fail at load.
 
-`InstrumentPreset` JSON schema_version **1**: `preset_id`, `chords` mapping supported
+Legacy `InstrumentPreset` JSON schema_version **1**: `preset_id`, `chords` mapping supported
 C/G/Am/F names to simple polygons, `strum` polygon, `axis` directed endpoints,
 optional `interaction` overrides for InteractionConfig. No marker IDs or board ID.
 Concave regions and coordinates outside the unit square are supported. Boundary
@@ -31,6 +31,75 @@ distance/speed/jump thresholds use the corresponding region-local unit square.
 Published landmarks and display polygons remain in board UV. Legacy presets
 without these fields retain their original UV units. The compatibility field
 `strum_speed_uv_s` uses region units/s when `strum_frame` is supplied.
+
+New presets use **schema_version 2** with `preset_id`, exactly seven `degree_regions`
+(string keys `"1"` through `"7"`), required convex `selection_frame`, `strum`, `axis`,
+optional `strum_frame` and `interaction`. Subdivision follows the selection frame's
+local horizontal coordinate. No musical names or tonic are stored in geometry.
+Live loading upgrades v1 presets with a `chord_frame`, and the known default four-cell
+layout, in memory only. Unrecoverable custom layouts remain visible but disable
+interaction with `layout_requires_calibration`; redraw the two regions. Historical
+recordings never undergo this live upgrade.
+
+## Performance settings and musical events
+
+GET `/api/performance` returns `mode`, `tonic`, `revision`, `tonics` and seven
+`voices` (`degree`, `label`, `chord`, `notes_midi`). POST the complete object
+`{"mode":"melody","tonic":"D"}` to update. Modes: `chord`, `melody`. Tonics:
+`C, Db, D, Eb, E, F, F#, G, Ab, A, Bb, B` (ASCII wire spelling). Invalid bodies and
+changes during calibration return 400; GET before startup/after stop returns 409.
+Controls use the existing same-origin and loopback restrictions. No-op updates
+retain revision. Real changes increment it; settings live until service restart.
+
+Native snapshots include `performance` and `layout.degree_regions`. Snapshot settings
+belong to the same immutable frame/JPEG; following a POST, wait for a snapshot with
+its returned revision before drawing the new settings. Clients use the server's
+spelled voice labels. Defaults are chord/C, revision 0.
+
+Interaction adds `selected_degree`, `selected_label`, `selection_valid`,
+`candidate_degree`, `candidate_label`, `selection_point_uv`, `selection_reason`,
+`selection_dwell_progress`. Legacy `chord_*` diagnostic fields remain; chord names
+are null and `chord_valid` is false in melody mode. `selection_valid` gates both modes.
+
+Events retain ID/frame/time/direction/velocity and add `mode`, `tonic`, `degree`,
+`label`, `notes_midi`, `duration_ms` (900), `performance_revision`. `chord` is the
+actual chord name in chord mode, null in melody mode. Musical mapping is frozen
+at emission. Audio rejects obsolete revisions, drains old pending events and
+fades active voices over 10 ms after changes. Event IDs never reset on a change.
+Re-selection requires a fresh dwell and new strum-side observation. Sample banks
+are preloaded; event submission performs no synthesis, disk I/O or blocking playback.
+
+Recording configurations include `performance` (mode/tonic/revision). Replay restores
+it at frame boundaries and does not reconstruct the plane tracker for music-only
+changes. Missing performance data means historical chord/C semantics and original
+four-chord voicings. Old v1 geometry remains unmodified during replay.
+
+## Fingertip selection and strum trajectories
+
+Selection tests the left index fingertip (landmark 8) against polygon interiors,
+with a 100 ms dwell. The display fills all seven cells and highlights the selected
+interior. `selection_margin_fraction` defaults to .05: for schema-2 presets the
+entry/hysteresis margin is capped at this fraction of the cell's shortest bounding
+extent in selection coordinates. `null` retains the historical `chord_margin`.
+
+`strum_path_enabled` defaults to true. Successive reliable right-index observations
+must intersect the finite strum axis inside its polygon and reach opposite sides
+of the .45/.55 hysteresis thresholds. Intermediate observations in the central
+buffer retain a real crossing; an unobserved shortcut between distant anchors is
+never substituted. `strum_tracking_margin` (.35) expands the observation zone in
+strum-local coordinates, allowing both samples to be just outside the polygon.
+The per-frame .45 jump cap is waived only for an observed axis-crossing segment;
+the 12 units/s speed ceiling, identity, freshness and board-valid checks remain.
+Minimum normal speed is .6 units/s; event cooldown is .18 s.
+
+Interaction also publishes `strum_point_uv` (board coordinates),
+`strum_point_local` (strum coordinates), `strum_in_region`, and `strum_reason`.
+The web readout distinguishes selection not ready, missing/unreliable right hand,
+outside zone, waiting for a starting side/crossing, missed axis, motion outlier,
+too slow, cooldown and successful trigger. The overlay marks this point `STRUM`.
+New recordings save all interaction options. Replay defaults missing
+`strum_path_enabled` to false and missing `selection_margin_fraction` to null,
+so recordings from before this change retain their original interaction behavior.
 
 ## HTTP compatibility and projection semantics
 

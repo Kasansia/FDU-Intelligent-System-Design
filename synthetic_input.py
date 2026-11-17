@@ -29,16 +29,25 @@ class SyntheticHandTracker:
         self.started = timestamp if self.started is None else self.started
         elapsed = timestamp - self.started
         self.frame_id += 1
-        index = int(elapsed/3) % 4
+        cells = list(self.layout.preset.regions.values())
+        index = int(elapsed/1.8) % len(cells)
         phase = elapsed % 1.2
         v = (.3 if phase < .3 else .3+(phase-.3)*2 if phase < .5 else
              .7 if phase < .9 else .7-(phase-.9)*2 if phase < 1.1 else .3)
         hands = []
-        for role, u, y, tid in (('Left', .11+index*.14, .5, 1), ('Right', .78, v, 2)):
-            # Small visible hand skeleton; keep MCP mean and index tip at the scripted target.
+        left_target = np.mean(cells[index], axis=0)
+        # Generate both hands in the active region frames, including tilted presets.
+        from instrument_geometry import project
+        from instrument_preset import frame_transform
+        if self.layout.preset.region_frame is not None:
+            left_target = project([[(index+.5)/len(cells), .5]], np.linalg.inv(frame_transform(self.layout.preset.region_frame)))[0]
+        right_target = (project([[.5, v]], np.linalg.inv(frame_transform(self.layout.preset.strum_frame)))[0]
+                        if self.layout.preset.strum_frame is not None else np.mean(self.layout.preset.axis, axis=0)+[0, v-.5])
+        for role, (u, y), tid in (('Left', left_target, 1), ('Right', right_target, 2)):
+            # Both roles use the index fingertip as their default interaction point.
             offsets = np.array([[0., .10]] + [[(finger-2)*.025, .07-joint*.025]
                                for finger in range(5) for joint in range(4)])
-            reference = offsets[[5, 9, 13, 17]].mean(axis=0) if role == 'Left' else offsets[8]
+            reference = offsets[8]
             uv = offsets - reference + [u, y]
             if self.layout.flip_u:
                 uv[:, 0] = 1 - uv[:, 0]

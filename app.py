@@ -21,6 +21,7 @@ from audio_engine import AudioEngine, MockAudioBackend, SoundDeviceBackend
 from camera_sources import cameras, open_camera
 from recording import Recorder
 from timing import monotonic_s
+from music import Performance
 
 LOG = logging.getLogger('motionmuse')
 
@@ -33,6 +34,7 @@ class Service:
         self.pipeline_lock = threading.RLock()
         self.calibration = CalibrationSessions(ROOT/'config/boards')
         self.calibrating = False
+        self.layout_error = None
         self.raw_frame = None
         self.stop = threading.Event()
         self.packet = {'schema_version': 3, 'hands': [], 'status': 'starting',
@@ -77,6 +79,7 @@ class Service:
                           camera_index=self.index, camera_backend=self.backend_name, available_cameras=self.device_list)
             result['recording_details'] = self.recording.snapshot() if self.recording else None
             result['calibrating'] = self.calibrating
+            result['layout_error'] = self.layout_error
             result['recording_default_raw_frames'] = self.args.record_video
             if self.audio is not None:
                 result['audio'] = self.audio.snapshot()
@@ -120,6 +123,10 @@ class Service:
             companion = calibrated_preset_path(board, self.args.board) if board else None
             preset_path = self.args.preset or companion
             preset = InstrumentPreset.load(preset_path) if preset_path else InstrumentPreset.default()
+            try:
+                preset = preset.for_live()
+            except ValueError as exc:
+                self.layout_error = str(exc)
             layout = InstrumentLayout(flip_u=self.args.layout == 'flip-u', preset=preset)
             tracking_data = {}
             if self.args.tracking_config:
@@ -166,7 +173,9 @@ class Service:
                 captured, mono = time.time(), monotonic_s()
                 with self.pipeline_lock:
                     self.calibrating = self.calibration.active()
-                    display, packet = self.pipeline.process(frame, captured, mono, interaction_enabled=not self.calibrating)
+                    display, packet = self.pipeline.process(frame, captured, mono, interaction_enabled=not self.calibrating and not self.layout_error)
+                    if self.layout_error:
+                        packet['interaction'] = self.pipeline.logic.invalidate('layout_requires_calibration')
                     packet.setdefault('source', 'video' if self.args.video else 'camera')
                     if audio_mode == 'mock' and self.audio.status == 'mock':
                         backend.pump()
@@ -201,6 +210,26 @@ class Service:
                 data.update(json.load(file))
         return InteractionConfig(**data)
 
+    def performance_request(self, body=None):
+        with self.pipeline_lock:
+            if self.pipeline is None or self.stop.is_set():
+                raise ValueError('演奏服务尚未就绪')
+            current = self.pipeline.logic.performance
+            if body is None:
+                return current.snapshot()
+            if self.calibration.active():
+                raise ValueError('标定期间不能切换模式或调性')
+            if not isinstance(body, dict) or set(body) != {'mode', 'tonic'}:
+                raise ValueError('Expected mode and tonic')
+            updated = Performance(body['mode'], body['tonic'], current.revision+1)
+            if (updated.mode, updated.tonic) == (current.mode, current.tonic):
+                return current.snapshot()
+            self.pipeline.logic.set_performance(updated)
+            if self.audio is not None:
+                self.audio.set_performance_revision(updated.revision)
+            # Publish settings with the next matching image; old snapshots keep their revision.
+            return updated.snapshot()
+
     def calibration_request(self, action, body):
         with self.pipeline_lock:
             if action == 'capture':
@@ -216,7 +245,8 @@ class Service:
                 if self.pipeline is None:
                     raise ValueError('Pipeline not ready')
                 return self.calibration.preview(body.get('session_id'), body.get('points_raw'),
-                                                body.get('board_id'), self.pipeline.layout, body.get('regions_raw'))
+                                                body.get('board_id'), self.pipeline.layout, body.get('regions_raw'),
+                                                self.pipeline.logic.performance)
             if action == 'save':
                 board, path = self.calibration.save(body.get('session_id'), body.get('preview_token'))
                 preset_path = calibrated_preset_path(board, path)
@@ -226,6 +256,9 @@ class Service:
                     config = self.interaction_config(preset)
                     self.pipeline.layout = self.pipeline.logic.layout = layout
                     self.pipeline.logic.config = config
+                    self.layout_error = None
+                    if hasattr(self.pipeline.hands, 'layout'):
+                        self.pipeline.hands.layout = layout
                 self.pipeline.board = ArucoBoardTracker(board=board, config=self.pipeline.board.config)
                 self.pipeline.logic.invalidate('board_changed')
                 self.calibrating = False
@@ -270,6 +303,11 @@ def handler_for(service):
                     packet, jpeg = service.snapshot()
                     body = {'packet': packet, 'image_base64': base64.b64encode(jpeg).decode() if jpeg else None}
                     self.send(200, json.dumps(body, allow_nan=False).encode(), 'application/json')
+                elif path == '/api/performance':
+                    if service.pipeline is None or service.stop.is_set():
+                        self.send(409, b'Performance service not ready', 'text/plain')
+                    else:
+                        self.send(200, json.dumps(service.performance_request(), allow_nan=False).encode(), 'application/json')
                 elif path == '/frame.jpg':
                     packet, jpeg = service.snapshot()
                     self.send(200 if jpeg else 503, jpeg or b'Camera not ready',
@@ -292,7 +330,14 @@ def handler_for(service):
                 return
             path = urlparse(self.path).path
             try:
-                if path.startswith('/api/calibration/'):
+                if path == '/api/performance':
+                    length = int(self.headers.get('Content-Length', '0'))
+                    if not 0 < length <= 1024:
+                        raise ValueError('Performance request must be 1..1024 bytes')
+                    result = service.performance_request(json.loads(self.rfile.read(length)))
+                    self.send(200, json.dumps(result, allow_nan=False).encode(), 'application/json')
+                    return
+                elif path.startswith('/api/calibration/'):
                     length = int(self.headers.get('Content-Length', '0'))
                     if not 0 <= length <= 16384:
                         raise ValueError('Request body exceeds 16 KiB')

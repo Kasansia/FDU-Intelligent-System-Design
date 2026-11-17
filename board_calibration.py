@@ -13,8 +13,9 @@ import cv2 as cv
 import numpy as np
 from aruco_tracking import ArucoBoardTracker
 from board_definition import BoardDefinition, polygon, safe_name
-from instrument_geometry import CHORDS, InstrumentLayout, project, raw_to_display_xy
+from instrument_geometry import InstrumentLayout, project, raw_to_display_xy
 from instrument_preset import InstrumentPreset, frame_transform
+from music import Performance
 
 
 def calibrated_preset_path(board, board_path):
@@ -24,13 +25,11 @@ def calibrated_preset_path(board, board_path):
 
 
 def region_preset(name, chord, strum):
-    """Four chord cells and a directed center line in each selected region's frame."""
-    chord_inverse, strum_inverse = np.linalg.inv(frame_transform(chord)), np.linalg.inv(frame_transform(strum))
-    chords = {key: project([[i/4, 0], [(i+1)/4, 0], [(i+1)/4, 1], [i/4, 1]], chord_inverse).tolist()
-              for i, key in enumerate(CHORDS)}
+    """Seven degree cells and a directed center line in region-local coordinates."""
+    strum_inverse = np.linalg.inv(frame_transform(strum))
     axis = project([[0, .5], [1, .5]], strum_inverse).tolist()
-    return InstrumentPreset(name, chords, np.asarray(strum).tolist(), axis,
-                            chord_frame=np.asarray(chord).tolist(), strum_frame=np.asarray(strum).tolist())
+    return InstrumentPreset.from_frames(name, np.asarray(chord).tolist(), np.asarray(strum).tolist(), axis,
+                                        strum_frame=np.asarray(strum).tolist())
 
 
 def encode_preview(image):
@@ -88,7 +87,7 @@ class CalibrationSessions:
                 self.session = None
             return self.session is not None
 
-    def preview(self, sid, points_raw, board_id, layout, regions_raw=None):
+    def preview(self, sid, points_raw, board_id, layout, regions_raw=None, performance=None):
         with self.lock:
             s = self._get(sid)
             s['preview'] = None
@@ -157,7 +156,7 @@ class CalibrationSessions:
                 raise ValueError('Calibration quality insufficient: '+result['reason'])
             display = cv.flip(s['raw'], 1) if s['mirrored'] else s['raw'].copy()
             regions = layout.regions()
-            shapes = dict(regions['chords'], strum=regions['strum'], axis=regions['axis'])
+            shapes = dict(regions['degree_regions'] or regions['chords'], strum=regions['strum'], axis=regions['axis'])
             if selected is None:
                 shapes['reference'] = unit.tolist()
             inverse = np.linalg.inv(H)
@@ -168,7 +167,8 @@ class CalibrationSessions:
                 xy = np.rint(np.clip(raw_to_display_xy(raw, width, s['mirrored']), -1e6, 1e6)).astype(np.int32)
                 color = (78, 174, 243) if name in ('strum', 'axis') else (50, 200, 120)
                 cv.polylines(display, [xy], name != 'axis', color, 2, cv.LINE_AA)
-                cv.putText(display, name, tuple(xy[0]), cv.FONT_HERSHEY_SIMPLEX, .5, color, 2)
+                label = f"{name}:{(performance or Performance()).voice(int(name))['label']}" if name.isdigit() else name
+                cv.putText(display, label, tuple(xy[0]), cv.FONT_HERSHEY_SIMPLEX, .4, color, 1)
             token = secrets.token_urlsafe(24)
             s['preview'] = dict(token=token, board=board, preset=preset)
             return dict(session_id=sid, preview_token=token, board=board.to_dict(), pose_quality=result['pose_quality'],

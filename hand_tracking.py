@@ -50,8 +50,11 @@ class HandTracker:
             screen = result[4:67].reshape(21, 3)
             world = result[67:130].reshape(21, 3)
             right = float(result[130])
-            # MediaPipe handedness assumes a mirrored/selfie input.
-            if not self.mirror:
+            # This bundled OpenCV Zoo ONNX model labels unmirrored camera input.
+            # Inference runs on `frame`, so undo its horizontal reflection for
+            # anatomical roles. The MediaPipe Solutions API uses a different
+            # convention; applying its non-mirrored correction reverses both hands.
+            if self.mirror:
                 right = 1.0 - right
             hands.append({
                 'handedness': 'Right' if right > 0.5 else 'Left',

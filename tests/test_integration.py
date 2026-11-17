@@ -48,7 +48,7 @@ class IntegrationTests(unittest.TestCase):
                     self.assertEqual(np.shape(p['hands'][0]['landmarks_instrument_uv']), (21, 2))
                     json.dumps(p, allow_nan=False)
                     events.extend(p['events'])
-                self.assertEqual({e['chord'] for e in events}, {'C', 'G', 'Am', 'F'})
+                self.assertEqual({e['chord'] for e in events}, {'C', 'Dm', 'Em', 'F', 'G', 'Am', 'Bdim'})
                 self.assertEqual({e['direction'] for e in events}, {'up', 'down'})
                 self.assertEqual(events, backend.events)
                 self.assertEqual(len({e['event_id'] for e in events}), len(events))

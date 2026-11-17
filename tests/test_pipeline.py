@@ -49,6 +49,17 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(len(packet['hands']), 2)
         self.assertEqual({h['handedness'] for h in packet['hands']}, {'Left', 'Right'})
 
+    def test_anatomical_identity_in_both_display_modes(self):
+        # In woman_hands.jpg, the subject's right arm reaches across her forehead;
+        # her left arm crosses below it. Checking only the set {Left, Right}
+        # lets a complete role reversal pass unnoticed.
+        for mirror in (False, True):
+            with self.subTest(mirror=mirror):
+                _, packet = HandTracker(mirror=mirror).process(self.image)
+                upper, lower = sorted(packet['hands'], key=lambda hand: hand['landmarks_px'][0][1])
+                self.assertEqual(upper['handedness'], 'Right')
+                self.assertEqual(lower['handedness'], 'Left')
+
 
 if __name__ == '__main__':
     unittest.main()

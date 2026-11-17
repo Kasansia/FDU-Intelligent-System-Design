@@ -49,11 +49,11 @@ class RegionCalibrationTests(unittest.TestCase):
                     self.assertEqual(result['status'], 'valid', result['reason'])
                     p = dict(instrument=result, frame_width=960, mirrored=mirrored)
                     shapes = overlay_polygons(p, layout)
-                    for name, original in [('C', [regions['chord'][0], regions['chord'][3]]), ('strum', regions['strum'])]:
+                    for name, original in [('1', [regions['chord'][0], regions['chord'][3]]), ('strum', regions['strum'])]:
                         expected = project(project(original, np.linalg.inv(DEFAULT_INVERSE)), inverse)
                         if mirrored:
                             expected[:, 0] = 959-expected[:, 0]
-                        actual = np.asarray(shapes[name])[[0, 3]] if name == 'C' else shapes[name]
+                        actual = np.asarray(shapes[name])[[0, 3]] if name == '1' else shapes[name]
                         np.testing.assert_allclose(actual, expected, atol=2.)
                     self.assertEqual(tracker.process(render_board(inverse=inverse, visible=[]), 10.1)['status'], 'held')
                     self.assertEqual(tracker.process(render_board(inverse=inverse, visible=[]), 10.4)['status'], 'lost')
@@ -131,11 +131,11 @@ class RegionCalibrationTests(unittest.TestCase):
                 self.assertIsNone(layout.chord_at(at([.005, .5], chord_inverse), margin=.015))
                 now = [0.]
                 logic = InstrumentLogic(layout, clock=lambda: now[0])
-                for i, name in enumerate(('C', 'G', 'Am', 'F')):
+                for i, name in enumerate(('C', 'Dm', 'Em', 'F', 'G', 'Am', 'Bdim')):
                     events = []
                     for t, v in ((0., .3), (.11, .3), (.2, .7), (.4, .3)):
                         now[0] = i+t
-                        _, emitted = logic.process(packet(now[0], left=at([(i+.5)/4, .5], chord_inverse), right=at([.5, v], strum_inverse)))
+                        _, emitted = logic.process(packet(now[0], left=at([(i+.5)/7, .5], chord_inverse), right=at([.5, v], strum_inverse)))
                         events.extend(emitted)
                     self.assertEqual([e['direction'] for e in events], ['down', 'up'])
                     self.assertEqual({e['chord'] for e in events}, {name})

@@ -1,4 +1,4 @@
-"""Bounded event queue and polyphonic, pre-generated local chord test tones.
+"""Bounded musical-event queue and polyphonic, pre-generated local test tones.
 
 No file loading, subprocesses or blocking playback on the perception thread.
 The PortAudio callback consumes each accepted event once, independently of HTTP.
@@ -9,11 +9,10 @@ import queue
 import threading
 import time
 import numpy as np
-from instrument_geometry import CHORDS
+from music import Performance, TONICS, LEGACY_NOTES
 from timing import monotonic_s
 
-NOTES = {'C': (48, 55, 60, 64, 67), 'G': (43, 50, 55, 59, 62),
-         'Am': (45, 52, 57, 60, 64), 'F': (41, 48, 53, 57, 60)}
+NOTES = LEGACY_NOTES
 
 
 def synthesize_chords(sample_rate=48000, duration=.9):
@@ -33,6 +32,33 @@ def synthesize_chords(sample_rate=48000, duration=.9):
                 data[offset:] += (tone[:len(t)-offset] * .08).astype(np.float32)
             sounds[chord, direction] = data
     return sounds
+
+
+class SynthSoundBank:
+    """Pre-rendered event voices. A future sampler can implement the same lookup."""
+    def __init__(self, sample_rate):
+        self.sounds = {}
+        note_sets = set(LEGACY_NOTES.values())
+        for mode in ('chord', 'melody'):
+            for tonic in TONICS:
+                note_sets.update(tuple(Performance(mode, tonic).voice(i)['notes_midi']) for i in range(1, 8))
+        t = np.arange(int(sample_rate*.9), dtype=np.float64)/sample_rate
+        envelope = (1-np.exp(-t*500))*np.exp(-t*5)*np.minimum(1., (.9-t)*100)
+        tones = {}
+        for midi in set(n for notes in note_sets for n in notes):
+            phase = 2*np.pi*(440*2**((midi-69)/12))*t
+            tones[midi] = ((np.sin(phase)+.25*np.sin(2*phase)+.1*np.sin(3*phase))*envelope).astype(np.float32)
+        for notes in note_sets:
+            for direction in ('down', 'up'):
+                sound = np.zeros(len(t), np.float32)
+                for i, midi in enumerate(notes if direction == 'down' else reversed(notes)):
+                    offset = int(sample_rate*.008*i)
+                    sound[offset:] += tones[midi][:len(t)-offset]*(.25/np.sqrt(len(notes)))
+                self.sounds[notes, direction] = sound
+
+    def get_sound(self, event):
+        notes = event.get('notes_midi', LEGACY_NOTES.get(event.get('chord'), ()))
+        return self.sounds.get((tuple(notes), event['direction']))
 
 
 class MockAudioBackend:
@@ -87,16 +113,19 @@ class SoundDeviceBackend:
 
 class AudioEngine:
     def __init__(self, backend=None, sample_rate=48000, queue_size=8, max_voices=8,
-                 max_event_age_s=.2, clock=monotonic_s, enabled=True):
+                 max_event_age_s=.2, clock=monotonic_s, enabled=True, sound_bank=None):
         if queue_size < 1 or max_voices < 1 or sample_rate < 8000 or max_event_age_s <= 0:
             raise ValueError('Invalid audio configuration')
         self.backend = backend if backend is not None else SoundDeviceBackend()
         self.sample_rate, self.clock = sample_rate, clock
         self.queue = queue.Queue(maxsize=queue_size)
         self.max_voices, self.max_event_age_s = max_voices, max_event_age_s
-        self.sounds = synthesize_chords(sample_rate)
+        self.sound_bank = sound_bank or SynthSoundBank(sample_rate)
         self.voices, self.latencies_ms = [], deque(maxlen=256)
         self.submit_lock = threading.Lock()
+        self.performance_revision = self.render_revision = 0
+        self.fade_voices = []
+        self.fade_remaining = 0
         self.high_water = self.accepted = self.played = self.dropped = self.duplicates = 0
         self.error = None
         self.status = 'starting' if enabled else 'disabled'
@@ -115,48 +144,83 @@ class AudioEngine:
         """Return immediately. IDs are monotonic; old/replayed IDs never re-enter playback."""
         try:
             valid = (type(event['event_id']) is int and event['event_id'] > 0 and
-                     event['chord'] in CHORDS and event['direction'] in ('up', 'down') and
+                     event['direction'] in ('up', 'down') and
                      type(event['velocity']) is int and 1 <= event['velocity'] <= 127 and
-                     math.isfinite(event['timestamp_monotonic_s']))
-        except (KeyError, TypeError):
+                     math.isfinite(event['timestamp_monotonic_s']) and
+                     type(event.get('performance_revision', 0)) is int and
+                     event.get('duration_ms', 900) == 900)
+            if 'notes_midi' in event:
+                notes = event['notes_midi']
+                valid = valid and isinstance(notes, (list, tuple)) and 1 <= len(notes) <= 5 and all(type(n) is int and 0 <= n <= 127 for n in notes)
+            valid = valid and self.sound_bank.get_sound(event) is not None
+        except (KeyError, TypeError, ValueError):
             valid = False
         if not valid:
             return False
         with self.submit_lock:
+            if event.get('performance_revision', 0) != self.performance_revision:
+                self.dropped += 1
+                return False
             if event['event_id'] <= self.high_water:
                 self.duplicates += 1
                 return False
+
             self.high_water = event['event_id']
             if self.status not in ('ready', 'mock') or self.backend.error:
                 self.dropped += 1
                 return False
             try:
-                self.queue.put_nowait(dict(event))
+                queued = dict(event)
+                if 'notes_midi' in queued:
+                    queued['notes_midi'] = list(queued['notes_midi'])
+                self.queue.put_nowait(queued)
                 self.accepted += 1
                 return True
             except queue.Full:
                 self.dropped += 1
                 return False
 
+    def set_performance_revision(self, revision):
+        """Small control update; the callback owns voice fading and stale queue draining."""
+        with self.submit_lock:
+            self.performance_revision = revision
+
     def render(self, frames):
         # Sole owner of voices: audio callback (or explicitly driven mock).
         now = self.clock()
+        revision = self.performance_revision
+        if revision != self.render_revision:
+            self.fade_voices = self.voices
+            self.voices = []
+            self.fade_remaining = max(1, int(self.sample_rate*.01))
+            self.render_revision = revision
         for _ in range(self.queue.maxsize):
             try:
                 event = self.queue.get_nowait()
             except queue.Empty:
                 break
             age = now - event['timestamp_monotonic_s']
-            if age < -.01 or age > self.max_event_age_s:
+            if event.get('performance_revision', 0) != revision or age < -.01 or age > self.max_event_age_s:
                 self.dropped += 1
                 continue
             if len(self.voices) >= self.max_voices:
                 self.voices.pop(0)
-            self.voices.append([self.sounds[event['chord'], event['direction']], 0, event['velocity']/127])
+            self.voices.append([self.sound_bank.get_sound(event), 0, event['velocity']/127])
             self.backend.begin_event(event)
             self.played += 1
             self.latencies_ms.append(max(0, age)*1000)
         output = np.zeros(frames, np.float32)
+        if self.fade_remaining:
+            fade_count = min(frames, self.fade_remaining)
+            fade = (self.fade_remaining-np.arange(fade_count))/max(1, int(self.sample_rate*.01))
+            for voice in self.fade_voices:
+                sound, offset, gain = voice
+                count = min(fade_count, len(sound)-offset)
+                output[:count] += sound[offset:offset+count]*gain*fade[:count]
+                voice[1] += count
+            self.fade_remaining -= fade_count
+            if not self.fade_remaining:
+                self.fade_voices = []
         remaining = []
         for sound, offset, gain in self.voices:
             count = min(frames, len(sound)-offset)
@@ -190,9 +254,11 @@ class AudioEngine:
 def main():
     import argparse
     import json
-    parser = argparse.ArgumentParser(description='Play four original test chords without camera or UI')
+    parser = argparse.ArgumentParser(description='Play seven scale degrees without camera or UI')
     parser.add_argument('--list-devices', action='store_true')
     parser.add_argument('--device', help='PortAudio output device name or index')
+    parser.add_argument('--mode', choices=['chord', 'melody'], default='chord')
+    parser.add_argument('--tonic', choices=TONICS, default='C')
     args = parser.parse_args()
     if args.list_devices:
         import sounddevice as sd
@@ -203,9 +269,11 @@ def main():
     try:
         if engine.snapshot()['status'] == 'error':
             raise RuntimeError(engine.snapshot()['error'])
-        for i, chord in enumerate(CHORDS, 1):
+        performance = Performance(args.mode, args.tonic)
+        for i in range(1, 8):
             engine.submit({'event_id': i, 'source_frame_id': 0, 'timestamp_monotonic_s': monotonic_s(),
-                           'chord': chord, 'direction': 'down', 'velocity': 60+i*15})
+                           **performance.voice(i), 'mode': performance.mode, 'tonic': performance.tonic,
+                           'performance_revision': 0, 'duration_ms': 900, 'direction': 'down', 'velocity': 90})
             time.sleep(.4)
         time.sleep(1.)
         print(json.dumps(engine.snapshot(), indent=2))

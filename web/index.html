@@ -13,14 +13,19 @@
 <div class="section-label"><span>01 / 实时演奏</span><span id="frameInfo">等待画面</span></div>
 <div class="stage"><img id="video" alt="同帧手部骨架、Marker 和乐器区域叠加画面"><div id="waiting" class="waiting"><span class="eyebrow">MOTIONMUSE</span><h2>等待画面</h2><p id="waitMessage">启动本地服务后，将贴有标记的刚性平板放入画面。</p></div></div>
 <div class="metrics"><div><small>处理速度</small><strong id="fps">—</strong><span>FPS</span></div><div><small>手部推理</small><strong id="latency">—</strong><span>ms</span></div><div><small>板面定位</small><strong id="arucoMs">—</strong><span>ms</span></div><div><small>视觉合计</small><strong id="totalMs">—</strong><span>ms</span></div></div>
-<div class="chord-strip" id="chordStrip" aria-label="和弦选择区域"></div><p class="hint">左手在和弦区停留约 100 ms，右手食指跨过扫弦带中线。板子暂时遮挡时暂停演奏。</p>
+<div class="chord-strip" id="chordStrip" aria-label="选音识别状态"></div><p class="hint">将左手食指尖的 SELECT 圆圈移入画面中的 1 / 2 / 3 / 4 / 5 / 6 / 7 区域，停留约 100 ms。右手食指用于扫弦；板子暂时遮挡时暂停演奏。</p>
 </div>
 <aside class="console">
 <div class="section-label"><span>02 / 演奏控制台</span><span class="live-dot"></span></div>
-<div class="chord-readout"><small>当前和弦</small><div id="chord">—</div><span id="chordState">等待左手选择</span></div>
+<div class="performance-controls" aria-label="演奏设置">
+<div class="mode-buttons" role="group" aria-label="演奏模式"><button id="modeChord" disabled aria-pressed="true">和弦</button><button id="modeMelody" disabled class="secondary" aria-pressed="false">旋律</button></div>
+<label>大调主音 <select id="tonic" aria-label="大调主音" disabled></select></label><p id="performanceHint" class="hint">正在读取演奏设置…</p><p id="performanceError" class="error" role="status"></p>
+</div>
+<div class="chord-readout"><small>当前选择</small><div id="chord">—</div><span id="chordState">等待左手选择</span></div>
 <div class="readout"><span>乐器定位</span><strong id="boardState">LOST</strong><small id="markerState">0 / 4 MARKERS</small></div>
 <div class="readout"><span>音频输出</span><strong id="audioState">初始化中</strong><small id="audioDetail">等待本地音频后端</small></div>
 <div class="readout"><span>最近扫弦</span><strong id="event">—</strong><small id="eventDetail">等待新事件</small></div>
+<div class="readout"><span>拨弦判定 · 右手食指尖</span><strong id="strumState">等待检测</strong><small id="strumDetail">让 STRUM 圆圈从中线一侧扫到另一侧</small></div>
 <div class="hands" id="hands">等待手部</div>
 <label class="hint"><input id="recordVideo" type="checkbox"> 实验采集：同时保存原始图像</label>
 <div class="controls"><button id="record">开始录制</button><button id="stop" class="secondary">停止服务</button></div>
@@ -31,7 +36,7 @@
 </aside>
 </section>
 <section class="lower">
-<div class="guide"><div class="section-label">03 / 持板准备</div><div class="guide-content"><div class="marker-layout" aria-label="旧版免标定布局，上排 0 1，下排 2 3"><b>0</b><b>1</b><span>旧版免标定布局</span><b>2</b><b>3</b></div><div><h2>自由贴标，分别划定两个区域。</h2><p>DICT_4X4_50 · 不同 ID 分散贴在同一刚性平面，保留白边，可自由旋转。点击“划定演奏区域”，分别框选和弦区和拨弦区；保存后随板面一起移动。</p><p>绿色区域选和弦，琥珀色区域扫弦。UV 表示二维投影，不代表手指接触板面。</p></div></div></div>
+<div class="guide"><div class="section-label">03 / 持板准备</div><div class="guide-content"><div class="marker-layout" aria-label="旧版免标定布局，上排 0 1，下排 2 3"><b>0</b><b>1</b><span>旧版免标定布局</span><b>2</b><b>3</b></div><div><h2>自由贴标，分别划定两个区域。</h2><p>DICT_4X4_50 · 不同 ID 分散贴在同一刚性平面，保留白边，可自由旋转。点击“划定演奏区域”，分别框选选音区和拨弦区；保存后随板面一起移动。</p><p>绿色区域选择级数，琥珀色区域扫弦。UV 表示二维投影，不代表手指接触板面。</p></div></div></div>
 <div class="events"><div class="section-label">04 / 事件记录 <span>仅展示，不重播</span></div><ol id="events"><li>尚无扫弦事件</li></ol></div>
 </section>
 <details id="debug"><summary>调试面板 <span>21 点坐标 · 局部三维投影 · 原始 API</span></summary><div class="debug-body">
@@ -44,12 +49,12 @@
 <footer><span>本地视觉 · 本地音频 · 无需云端推理</span><span>FDU / MOTIONMUSE</span></footer>
 </main>
 <dialog id="calibrationDialog" aria-labelledby="calibrationTitle">
-<h2 id="calibrationTitle">划定和弦区与拨弦区</h2>
-<p>先捕获画面，再在同一块板面上分别划定两个区域。和弦区分成 C / G / Am / F 四格；拨弦区中线用于上下扫弦。</p>
+<h2 id="calibrationTitle">划定选音区与拨弦区</h2>
+<p>先捕获画面，再在同一块板面上分别划定两个区域。选音区分成 1 / 2 / 3 / 4 / 5 / 6 / 7 七格；拨弦区中线用于上下扫弦。</p>
 <p class="hint">捕获期间暂停演奏。请让至少两枚分散的标记清晰可见。可拖出矩形，再拖动角点贴合倾斜的板面；镜像画面也直接按看到的位置操作。</p>
-<div class="calibration-toolbar"><div class="region-tabs" role="group" aria-label="选择绘制区域"><button id="selectChordRegion" class="secondary" aria-pressed="true">1 · 和弦区</button><button id="selectStrumRegion" class="secondary" aria-pressed="false">2 · 拨弦区</button></div><label>划定方式 <select id="calibrationMode"><option value="rectangle">拖拽矩形</option><option value="corners">依次点选四角</option></select></label></div>
+<div class="calibration-toolbar"><div class="region-tabs" role="group" aria-label="选择绘制区域"><button id="selectChordRegion" class="secondary" aria-pressed="true">1 · 选音区</button><button id="selectStrumRegion" class="secondary" aria-pressed="false">2 · 拨弦区</button></div><label>划定方式 <select id="calibrationMode"><option value="rectangle">拖拽矩形</option><option value="corners">依次点选四角</option></select></label></div>
 <p id="calibrationInstruction" class="hint"></p>
-<div class="calibration-image"><canvas id="calibrationCanvas" width="640" height="480" aria-label="冻结图像，分别划定和弦区和拨弦区"></canvas></div>
+<div class="calibration-image"><canvas id="calibrationCanvas" width="640" height="480" aria-label="冻结图像，分别划定选音区和拨弦区"></canvas></div>
 <p id="calibrationCount" aria-live="polite"></p>
 <label>板面名称 <input id="boardName" value="my_board" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" autocomplete="off"></label>
 <div class="calibration-controls"><button id="calibrationCapture">捕获 / 重新捕获</button><button id="calibrationUndo" class="secondary">撤销</button><button id="calibrationReset" class="secondary">重选当前区域</button><button id="calibrationPreview">预览</button><button id="calibrationSave">确认保存并启用</button><button id="calibrationCancel" class="secondary">取消</button></div>

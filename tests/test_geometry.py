@@ -28,9 +28,9 @@ class GeometryTests(unittest.TestCase):
             p['mirrored'] = True
             p['instrument']['homography_instrument_to_camera'] = self.inverse.tolist()
             shapes = overlay_polygons(p, layout)
-            for name in ('C', 'G', 'Am', 'F'):
+            for name in map(str, range(1, 8)):
                 recovered = project(display_to_raw_xy(shapes[name], 640, True), self.h)
-                np.testing.assert_allclose(recovered, layout.regions()['chords'][name], atol=1e-9)
+                np.testing.assert_allclose(recovered, layout.regions()['degree_regions'][name], atol=1e-9)
                 self.assertEqual(layout.chord_at(recovered.mean(axis=0)), name)
             self.assertTrue(layout.in_strum_band(layout.local((.78, .5))))
 

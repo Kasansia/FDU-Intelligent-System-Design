@@ -79,12 +79,12 @@ class InstrumentLayout:
                     {name: rect(self.chord_u[0]+i*width, self.chord_u[0]+(i+1)*width, *self.chord_v) for i, name in enumerate(CHORDS)},
                     rect(*self.strum_u, *self.strum_v), [[u, self.axis_v] for u in self.strum_u])
             object.__setattr__(self, 'preset', preset)
-        chord_transform = None if self.preset.chord_frame is None else frame_transform(self.preset.chord_frame)
+        chord_transform = None if self.preset.region_frame is None else frame_transform(self.preset.region_frame)
         strum_transform = None if self.preset.strum_frame is None else frame_transform(self.preset.strum_frame)
         object.__setattr__(self, '_chord_transform', chord_transform)
         object.__setattr__(self, '_strum_transform', strum_transform)
         chords = {name: points if chord_transform is None else project(points, chord_transform)
-                  for name, points in self.preset.chords.items()}
+                  for name, points in self.preset.regions.items()}
         axis = self.preset.axis if strum_transform is None else project(self.preset.axis, strum_transform)
         if any(points is None for points in chords.values()) or axis is None:
             raise ValueError('Region or axis crosses its local projective horizon')
@@ -106,6 +106,13 @@ class InstrumentLayout:
         points = self._chords.get(chord)
         return points is not None and signed_distance(self._region_point(point, self._chord_transform), points) >= margin-1e-8
 
+    def selection_margin(self, key, legacy_margin, fraction):
+        """New seven-cell margins scale with one cell, not the whole selection frame."""
+        if fraction is None or self.preset.schema_version == 1 or key not in self._chords:
+            return legacy_margin
+        extent = np.ptp(np.asarray(self._chords[key]), axis=0)
+        return min(legacy_margin, float(extent.min())*fraction)
+
     def _region_point(self, point, matrix):
         point = self.local(point)
         if matrix is None:
@@ -118,6 +125,27 @@ class InstrumentLayout:
 
     def in_strum_band(self, point):
         return signed_distance(self.local(point), self.preset.strum) >= -1e-8
+
+    def in_strum_tracking_zone(self, point, margin=.35):
+        """Observe approach/departure, but require an actual finite-axis crossing to play."""
+        polygon = self.preset.strum if self._strum_transform is None else project(self.preset.strum, self._strum_transform)
+        return signed_distance(self.strum_motion_point(point), polygon) >= -margin-1e-8
+
+    def strum_path_crosses(self, first, second):
+        """Does the observed segment intersect the finite strum axis inside its region?"""
+        p, q = self.strum_motion_point(first), self.strum_motion_point(second)
+        if not np.isfinite([p, q]).all():
+            return False
+        a, b = self._axis
+        cross = lambda u, v: float(u[0]*v[1]-u[1]*v[0])
+        denominator = cross(q-p, b-a)
+        if abs(denominator) < 1e-10:
+            return False
+        t, u = cross(a-p, b-a)/denominator, cross(a-p, q-p)/denominator
+        if not (0 <= t <= 1 and 0 <= u <= 1):
+            return False
+        polygon = self.preset.strum if self._strum_transform is None else project(self.preset.strum, self._strum_transform)
+        return signed_distance(p+t*(q-p), polygon) >= -1e-8
 
     def strum_coordinate(self, point):
         """Signed distance along the directed axis normal; .5 keeps v-threshold compatibility."""
@@ -132,6 +160,7 @@ class InstrumentLayout:
     def regions(self):
         transform = lambda points: [list(self.local(p)) for p in points]
         return {'name': 'flip-u' if self.flip_u else 'standard', 'preset_id': self.preset.preset_id,
+                'degree_regions': {name: transform(points) for name, points in (self.preset.degree_regions or {}).items()},
                 'chords': {name: transform(points) for name, points in self.preset.chords.items()},
                 'strum': transform(self.preset.strum), 'axis': transform(self.preset.axis)}
 
@@ -167,7 +196,7 @@ def overlay_polygons(packet, layout):
     """Return the exact polygons used by both the layout hit-test and the renderer."""
     regions = layout.regions()
     result = {}
-    shapes = dict(regions['chords'], strum=regions['strum'], axis=regions['axis'],
+    shapes = dict(regions['degree_regions'] or regions['chords'], strum=regions['strum'], axis=regions['axis'],
                   board=packet['instrument'].get('outline_uv') or BOARD_UV[list(PERIMETER)])
     for name, points in shapes.items():
         projected = instrument_to_display_xy(points, packet['instrument']['homography_instrument_to_camera'],

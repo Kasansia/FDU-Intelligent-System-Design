@@ -37,7 +37,7 @@ class AudioTests(unittest.TestCase):
         low.submit(event(velocity=20))
         high.submit(event(velocity=100))
         np.testing.assert_allclose(hb.pump(), lb.pump()*5, atol=1e-7)
-        self.assertFalse(np.allclose(high.sounds['C', 'up'], high.sounds['C', 'down']))
+        self.assertFalse(np.allclose(high.sound_bank.get_sound(event(direction='up')), high.sound_bank.get_sound(event(direction='down'))))
 
     def test_bounded_queue_and_stale_events(self):
         engine, backend = self.make(queue_size=1)

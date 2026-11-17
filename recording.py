@@ -5,6 +5,7 @@ import json
 import queue
 from pathlib import Path
 import threading
+import tempfile
 from copy import deepcopy
 import hashlib
 import os
@@ -18,8 +19,8 @@ COLUMNS = ['frame_id', 'timestamp_unix_s', 'track_id', 'handedness', 'confidence
 
 class Recorder:
     def __init__(self, root, capacity=128, raw_frames=False, metadata=None):
-        self.folder = Path(root) / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-        self.folder.mkdir(parents=True, exist_ok=False)
+        Path(root).mkdir(parents=True, exist_ok=True)
+        self.folder = Path(tempfile.mkdtemp(prefix=datetime.now().strftime('%Y%m%d_%H%M%S_%f')+'_', dir=root))
         if capacity < 1:
             raise ValueError('Recording capacity must be positive')
         self.raw_frames = raw_frames

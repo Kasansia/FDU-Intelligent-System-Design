@@ -92,7 +92,7 @@ Homography 得到的是二维成像投影，手指可以悬空；z 不是板面�
 
 `InstrumentLogic.process(packet) -> (state, events)`。state 输出 current_chord、chord_valid、chord_stale、candidate_chord、candidate_since_monotonic_s、strum_state、last_event_id、reason 和可用速度。
 
-左手 MCP 5/9/13/17 均值，默认 100 ms 驻留，边界裕量 .015。丢失/低置信度立即无效，仅允许显示 stale 上次和弦。右手食指尖 8：above ≤.45 → crossing → below ≥.55 发 down，反向发 up；允许采样跨过 crossing 中间帧。最小跨越速度 .6 UV/s，冷却 .18 s。速度按最后同侧样本至对侧样本的 Δv/Δt 计算。velocity = round(1 + 126 × (speed−.6)/(3−.6))，裁剪到 1..127。
+左手默认使用食指尖 8，默认 100 ms 驻留，边界裕量 .015；`chord_nodes` 可覆盖选择点（多点时取 UV 均值）。丢失/低置信度立即无效，仅允许显示 stale 上次和弦。`interaction.chord_point_uv` 是实际命中的选择点，`chord_reason` 给出未选中的原因，`chord_dwell_progress` 为 0–1 驻留进度。右手食指尖 8：above ≤.45 → crossing → below ≥.55 发 down，反向发 up；允许采样跨过 crossing 中间帧。最小跨越速度 .6 UV/s，冷却 .18 s。速度按最后同侧样本至对侧样本的 Δv/Δt 计算。velocity = round(1 + 126 × (speed−.6)/(3−.6))，裁剪到 1..127。
 
 过期 >.35 s、相邻帧间隔 >.25 s、ID/左右角色变化、NaN、> .45 UV 突跳或 >12 UV/s 异常速度都会复位；需要重新看到一侧位置后才可扫。所有阈值可通过 `--interaction-config config.json` 覆盖 InteractionConfig 字段；未配置项保留默认。板面 held/lost 或新鲜左手缺失时事件为空。
 

@@ -15,6 +15,7 @@ from hand_tracking import HandTracker
 from instrument_geometry import InstrumentLayout, fuse_hands
 from instrument_logic import InstrumentLogic, InteractionConfig
 from instrument_preset import InstrumentPreset
+from music import Performance
 
 
 def json_lines(path):
@@ -41,6 +42,7 @@ def replay_recording(directory, output, board_override=None, preset_override=Non
     audio = AudioEngine(backend, clock=lambda: clock[0])
     tracker = logic = hand_tracker = None
     active = None
+    spatial_config = None
     first_time = previous_time = previous_id = None
     wall_start = time.monotonic()
     states, frames, missing, events = Counter(), 0, [], []
@@ -77,16 +79,27 @@ def replay_recording(directory, output, board_override=None, preset_override=Non
                     raise ValueError('Missing recorded board/preset configuration')
                 if active != config_id:
                     config = configs[config_id]
-                    board = board_override or (BoardDefinition.from_dict(config['board']) if config.get('board') else None)
-                    preset = preset_override or InstrumentPreset.from_dict(config['preset'])
-                    layout = InstrumentLayout(preset=preset, flip_u=config.get('flip_u', False))
-                    tracker = ArucoBoardTracker(board=board, learn_legacy=True, config=TrackingConfig(**config['tracking']))
-                    if board_override is None and original.get('tracking_previous_state'):
-                        tracker.restore_state(original['tracking_previous_state'], 1.-first_time)
-                    last_event_id = logic.event_id if logic is not None else 0
-                    interaction = config['interaction'] if preset_override is None else preset.interaction
-                    logic = InstrumentLogic(layout, InteractionConfig(**interaction), clock=lambda: clock[0])
-                    logic.event_id = last_event_id
+                    spatial = {k: v for k, v in config.items() if k != 'performance'}
+                    performance = Performance(**config.get('performance', {}))
+                    if spatial != spatial_config:
+                        board = board_override or (BoardDefinition.from_dict(config['board']) if config.get('board') else None)
+                        # Historical schema-1 recordings intentionally retain their four cells.
+                        preset = preset_override or InstrumentPreset.from_dict(config['preset'])
+                        layout = InstrumentLayout(preset=preset, flip_u=config.get('flip_u', False))
+                        tracker = ArucoBoardTracker(board=board, learn_legacy=True, config=TrackingConfig(**config['tracking']))
+                        if board_override is None and original.get('tracking_previous_state'):
+                            tracker.restore_state(original['tracking_previous_state'], 1.-first_time)
+                        last_event_id = logic.event_id if logic is not None else 0
+                        interaction = dict(config['interaction'] if preset_override is None else preset.interaction)
+                        if preset_override is None:
+                            interaction.setdefault('strum_path_enabled', False)
+                            interaction.setdefault('selection_margin_fraction', None)
+                        logic = InstrumentLogic(layout, InteractionConfig(**interaction), clock=lambda: clock[0], performance=performance)
+                        logic.event_id = last_event_id
+                        spatial_config = spatial
+                    else:
+                        logic.set_performance(performance)
+                    audio.set_performance_revision(performance.revision)
                     active = config_id
                 clock[0] = 1.+source_time-first_time
                 if audio_mode == 'sounddevice':
@@ -104,6 +117,7 @@ def replay_recording(directory, output, board_override=None, preset_override=Non
                 fuse_hands(packet, instrument)
                 packet.update(timestamp_monotonic_s=clock[0], status='running', source='replay',
                               recorded_timestamp_monotonic_s=source_time, layout=layout.regions(),
+                              performance=logic.performance.snapshot(),
                               replay_hands='rerun_onnx' if rerun_hands else 'recorded_landmarks',
                               vision_total_ms=round((time.perf_counter()-started)*1000, 3))
                 if original.get('interaction', {}).get('reason') == 'calibration_in_progress':
