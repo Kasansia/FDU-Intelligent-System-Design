@@ -1,0 +1,311 @@
+% !TeX program = xelatex
+% MotionMuse 阶段汇报。图片入口见各页的 \figureplaceholder。
+\documentclass[aspectratio=169,11pt]{beamer}
+\usepackage[UTF8,fontset=fandol]{ctex}
+\usepackage{graphicx,booktabs,tabularx,tikz}
+\usetikzlibrary{calc}
+\definecolor{FudanBlue}{HTML}{084797}
+\definecolor{Ink}{HTML}{263345}
+\definecolor{Muted}{HTML}{687587}
+\definecolor{Line}{HTML}{CBD4DF}
+\setbeamercolor{normal text}{fg=Ink,bg=white}
+\setbeamercolor{frametitle}{fg=FudanBlue}
+\setbeamercolor{structure}{fg=FudanBlue}
+\setbeamercolor{alerted text}{fg=FudanBlue}
+\setbeamerfont{frametitle}{size=\Large,series=\bfseries}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{itemize item}{\scriptsize\textbullet}
+\setbeamersize{text margin left=.75cm,text margin right=.75cm}
+\setlength{\parskip}{.3em}
+\setbeamertemplate{frametitle}{\vspace{.15cm}\begin{minipage}[c]{.95cm}\includegraphics[width=.8cm]{assets/template-1.png}\end{minipage}\begin{minipage}[c]{13.4cm}\usebeamerfont{frametitle}\insertframetitle\end{minipage}\vspace{.25cm}}
+\setbeamertemplate{footline}{\hspace{.75cm}\color{Muted}\fontsize{6.5}{8}\selectfont MotionMuse\hfill\insertframenumber/\inserttotalframenumber\hspace{.75cm}\vspace{.2cm}}
+\newcommand{\lead}[1]{{\color{FudanBlue}\bfseries #1}\par\vspace{.12cm}}
+\newcommand{\source}[1]{\vfill{\fontsize{6.4}{8}\selectfont\color{Muted}#1\par}}
+\newenvironment{points}{\begin{itemize}\setlength{\itemsep}{.45em}}{\end{itemize}}
+% 将图片存为指定的 PNG 文件即可自动替换占位框，比例保持不变。
+% 参数依次为：文件名、框高、占位标题、补图提示。
+\newcommand{\figureplaceholder}[4]{%
+\IfFileExists{figures/#1}{\begin{minipage}[c][#2][c]{\linewidth}\centering\includegraphics[width=\linewidth,height=#2,keepaspectratio]{figures/#1}\end{minipage}}{%
+\noindent\begingroup\setlength{\fboxsep}{8pt}\color{Line}\fbox{\begin{minipage}[c][\dimexpr#2-16pt-2\fboxrule\relax][c]{\dimexpr\linewidth-16pt-2\fboxrule\relax}\centering\color{Muted}\small 图示预留\par\medskip{\color{FudanBlue}\bfseries #3}\par\medskip\footnotesize #4\end{minipage}}\endgroup}\par}
+\title{MotionMuse 视觉交互虚拟乐器}
+\author{团队成员：待填写}
+\date{2026 年 11 月}
+\begin{document}
+
+% 01 封面
+\begin{frame}[plain]
+\begin{tikzpicture}[remember picture,overlay]
+\node[anchor=east,inner sep=0] at (current page.east){\includegraphics[height=9cm]{assets/cover-right.pdf}};
+\node[anchor=north west,inner sep=0] at ($(current page.north west)+(.75,-.6)$){\includegraphics[width=1.1cm]{assets/template-1.png}};
+\node[anchor=north west,inner sep=0,text width=8.7cm] at ($(current page.north west)+(.75,-3.0)$){%
+{\color{FudanBlue}\fontsize{24}{29}\selectfont\bfseries MotionMuse\par}
+\vspace{.15cm}
+{\color{FudanBlue}\fontsize{18}{23}\selectfont\bfseries 视觉交互虚拟乐器\par}
+\vspace{.35cm}
+{\normalsize ArUco 标记定位与无标记定位\par 双路线阶段汇报\par}
+\vspace{.55cm}
+{\small 团队成员：待填写\par 智能系统设计\par 2026 年 11 月}};
+\end{tikzpicture}
+\end{frame}
+
+% 02
+\begin{frame}[t]{项目目标与本阶段进展}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{.48\textwidth}
+\lead{让普通板材成为演奏界面}
+\begin{points}
+\item 摄像头识别双手与演奏载体。
+\item 左手选择音符或和弦，右手拨弦控制发声。
+\item 面向便携演奏、音乐交互与练习辅助。
+\end{points}
+\vspace{.25cm}\lead{阶段推进}
+\small 上阶段：手部关键点、板面坐标与可视化。\par
+本阶段：演奏功能、实体结构及无标记定位探索。
+\end{column}
+\begin{column}{.48\textwidth}
+\figureplaceholder{02-progress.png}{4.6cm}{阶段成果对照}{左：上阶段识别画面\\右：当前演奏工作台}
+\end{column}
+\end{columns}
+\end{frame}
+
+% 03
+\begin{frame}[t]{总体架构与双路线分工}
+\figureplaceholder{03-architecture.png}{2.15cm}{总体系统流程}{摄像头输入、手部识别与载体定位、区域映射、交互判断、音频输出}
+\vspace{.25cm}
+\renewcommand{\arraystretch}{1.45}
+\begin{tabularx}{\textwidth}{@{}p{2.3cm}XX@{}}
+\toprule 路线 & 定位方法 & 本阶段重点\\\midrule
+ArUco 标记定位 & 标记角点与板面坐标映射 & 演奏功能、区域标定、实体结构\\
+无标记定位 & 当前采用轮廓与外观匹配 & 定位基线、数据流程、四角模型方案\\\bottomrule
+\end{tabularx}\par
+\source{共同目标是完整演奏流程，两条路线目前的实现完整度不同。}
+\end{frame}
+
+% 04
+\begin{frame}[t]{路线 A：ArUco 定位原理与升级}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{.48\textwidth}
+\lead{以可识别标记建立板面坐标}
+\begin{points}
+\item 手部模型输出双手关键点。
+\item 检测标记角点，计算透视变换，将手部位置映射到板面。
+\item 多标记角点联合定位，支持自由贴标和部分遮挡。
+\item 定位质量不足时暂停新发声。
+\end{points}
+\end{column}
+\begin{column}{.48\textwidth}
+\figureplaceholder{04-aruco.png}{4.65cm}{标记与坐标映射}{标出可见角点、板面坐标及手指投影位置}
+\end{column}
+\end{columns}
+\source{实现依据：aruco\_tracking.py、pipeline.py 及项目 README。}
+\end{frame}
+
+% 05
+\begin{frame}[t]{路线 A：演奏功能与交互改进}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{.44\textwidth}
+\begin{points}
+\item 独立框选选音区与拨弦区，支持保存和加载。
+\item 七级选音，切换和弦与旋律模式，支持 12 个大调。
+\item 左手食指驻留选音，右手跨线触发上下扫。
+\item 修复左右手标签，补充快速拨弦路径判断。
+\item 选区高亮，并提示未触发的原因。
+\end{points}
+\end{column}
+\begin{column}{.52\textwidth}
+\figureplaceholder{05-performance.png}{4.65cm}{七区演奏工作台}{标注选音区、拨弦区、模式及调性控件}
+\end{column}
+\end{columns}
+\source{当前音色为本地合成测试音色。快速拨弦改善幅度仍需真人试奏测量。}
+\end{frame}
+
+% 06 Blender renders: frames 60 / 1 / 120 of note_neck_v2.blend
+\begin{frame}[t]{路线 A：实体载体设计}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{.31\textwidth}
+\figureplaceholder{06-open.png}{3.65cm}{展开状态}{长琴颈与四角标记}
+\centering\small\color{FudanBlue}\textbf{四角展开}\par
+\footnotesize\color{Muted}四片标记分散定位
+\end{column}
+\begin{column}{.31\textwidth}
+\figureplaceholder{06-folded.png}{3.65cm}{收纳状态}{圆片旋回内部}
+\centering\small\color{FudanBlue}\textbf{圆片收纳}\par
+\footnotesize\color{Muted}旋臂收回琴颈夹层
+\end{column}
+\begin{column}{.31\textwidth}
+\figureplaceholder{06-parts.png}{3.65cm}{拆解状态}{三板与装配关系}
+\centering\small\color{FudanBlue}\textbf{三板拆解}\par
+\footnotesize\color{Muted}前板、载板与后板分离
+\end{column}
+\end{columns}
+\vspace{.18cm}
+\small
+\begin{itemize}\setlength{\itemsep}{.15em}
+\item 长琴颈与音符造型，四个标记圆片可旋出、收回。
+\item 已交付 Blender 模型与分段打印组件，支持拆装和拼接。
+\item 图示为数字模型；标记共面性、锁止和结构刚性仍待实物验证。
+\end{itemize}
+\end{frame}
+
+% 07
+\begin{frame}[t]{路线 A：验证结果与当前边界}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{.48\textwidth}
+\lead{已完成的软件验证}
+{\color{FudanBlue}\fontsize{32}{36}\selectfont\bfseries 88}\quad 项 Python 测试通过\par
+\small 最近一轮记录：2026 年 11 月 8 日\par
+\vspace{.2cm}
+\begin{points}
+\item 前端坐标测试通过。
+\item 覆盖选音、上下扫、模式切换、异常复位及回放。
+\item 支持原始帧、关键点、配置与事件的记录和复现。
+\end{points}
+\end{column}
+\begin{column}{.46\textwidth}
+\lead{待完成的实物验收}
+\begin{points}
+\item 真人连续演奏的漏判率与误触率。
+\item 动作到实际声音的端到端延迟。
+\item 打印样机的装配、持握和遮挡测试。
+\item 真实音色及目标设备部署。
+\end{points}
+\end{column}
+\end{columns}
+\source{来源：docs/SEVEN\_MODE\_TEST\_REPORT.md。自动化与合成验证不替代真人演奏和硬件验收。}
+\end{frame}
+
+% 08
+\begin{frame}[t]{路线 B：现有无标记定位原型}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{.49\textwidth}
+\begin{points}
+\item 冻结画面，人工点击板子四角。
+\item 逐帧检测矩形轮廓，结合外观、长宽比和位置连续性选择目标。
+\item 从最近可靠检测帧进行短时光流预测，默认窗口约 0.28 秒。
+\item 超时未能重新检测时，不再输出定位。
+\end{points}
+\small\color{FudanBlue}当前采用传统视觉定位。\par 板角训练模型尚未接入。
+\end{column}
+\begin{column}{.47\textwidth}
+\figureplaceholder{08-markerless.png}{4.15cm}{无标记定位示例}{四角初始化、轮廓检测与遮挡恢复}
+\end{column}
+\end{columns}
+\source{3 项合成定位测试通过。完整演示仍需修复启动路径、帧同步与几何一致性问题。}
+\end{frame}
+
+% 09
+\begin{frame}[t]{路线 B：四角模型与数据流程}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{.49\textwidth}
+\lead{模型方案}
+\begin{points}
+\item 微调轻量 YOLO Pose，预测板框与四个几何角点。
+\item 根据四角计算板面坐标，再映射演奏区域。
+\item 结合几何和时间连续性检查定位结果。
+\end{points}
+\lead{已提供的数据准备工具}
+\small 视频采集、抽帧、CVAT 标注说明及 YOLO 数据集转换。采集覆盖慢速、演奏、快速、遮挡与无板场景。
+\end{column}
+\begin{column}{.47\textwidth}
+\figureplaceholder{09-training-flow.png}{4.45cm}{数据与模型流程}{采集、四角标注、数据划分、微调、视频评估}
+\end{column}
+\end{columns}
+\source{默认 yolo11n-pose.pt 识别人体姿态。板子定位需要专用数据微调，当前仓库未提供板角训练结果。}
+\end{frame}
+
+% 10
+\begin{frame}[t]{路线 B：训练成果与实验结果}
+\small\color{Muted}本页待数据与训练成果同步后补充。以下均为预留项。\par
+\vspace{.15cm}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{.49\textwidth}
+\small\renewcommand{\arraystretch}{1.5}
+\begin{tabularx}{\linewidth}{@{}p{1.65cm}X@{}}
+\toprule 数据规模 & 板子、视频与标注数量：待补充\\
+训练配置 & 模型、输入尺寸、轮数：待补充\\
+角点误差 & 可见角／遮挡角：待补充\\
+视频表现 & 可用率、恢复时间、速度：待补充\\
+系统接入 & 权重与演奏链路：待补充\\\bottomrule
+\end{tabularx}\par
+\end{column}
+\begin{column}{.47\textwidth}
+\figureplaceholder{10-training.png}{1.95cm}{训练曲线或指标}{填写实际实验条件与数据版本}
+\vspace{.15cm}
+\figureplaceholder{10-cases.png}{1.95cm}{成功与失败案例}{遮挡、相似背景、反光或快速运动}
+\end{column}
+\end{columns}
+\source{需另外留出未参与训练的板子，才能评价对陌生载体的泛化能力。}
+\end{frame}
+
+% 11
+\begin{frame}[t]{两条路线的阶段对比与统一评估}
+\small\renewcommand{\arraystretch}{1.45}
+\begin{tabularx}{\textwidth}{@{}p{1.6cm}XX@{}}
+\toprule 维度 & ArUco 路线 & 无标记路线\\\midrule
+使用准备 & 贴标与演奏区域标定 & 当前需人工四角初始化\\
+载体要求 & 依赖标记布局，外轮廓限制较少 & 当前偏向清晰矩形板\\
+当前交互 & 七级双模式、移调与本地发声 & 四和弦及扫弦提示，音频待接入\\
+阶段交付 & 演奏系统、实体模型、回放工具 & 定位基线、数据工具、训练方案\\
+下一步 & 真人演奏与样机验收 & 专用模型训练、接入与泛化评估\\\bottomrule
+\end{tabularx}\par
+\vspace{.3cm}
+\lead{相同条件下进行对照}
+\small 固定设备、光照与动作序列，比较角点误差、定位可用率、遮挡恢复、漏判、误触和声音延迟。\par
+\source{尚无统一条件下的实测对比，本阶段不作精度或速度的优劣结论。}
+\end{frame}
+
+% 12
+\begin{frame}[t]{系统衔接与团队分工}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{.49\textwidth}
+\lead{系统衔接重点}
+\begin{points}
+\item 统一板面坐标、角点顺序和可靠状态定义。
+\item 视频、手部和定位结果绑定同一帧。
+\item 区域绘制与命中判断使用一致几何。
+\item 明确无标记模型识别整块载体，还是矩形琴颈。
+\item 评估复用音乐、音频和录制模块。
+\end{points}
+\end{column}
+\begin{column}{.46\textwidth}
+\lead{按实际贡献填写负责人}
+\small\renewcommand{\arraystretch}{1.65}
+\begin{tabularx}{\linewidth}{@{}Xl@{}}
+\toprule 工作模块 & 负责人\\\midrule
+ArUco 定位与演奏交互 & 待填写\\
+无标记数据与模型训练 & 待填写\\
+系统整合与设备部署 & 待填写\\
+实体结构与样机验证 & 待填写\\
+音乐知识支持 & 待填写\\\bottomrule
+\end{tabularx}\par
+\end{column}
+\end{columns}
+\end{frame}
+
+% 13
+\begin{frame}[t]{下一阶段计划}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{.48\textwidth}
+\lead{ArUco 路线}
+\begin{points}
+\item 打印并装配样机，验证结构和标记可见性。
+\item 开展真人连续演奏与声音延迟测试。
+\end{points}
+\vspace{.2cm}\lead{无标记路线}
+\begin{points}
+\item 同步数据与训练结果，验证专用板角模型。
+\item 接入实时演奏，记录困难场景与失败案例。
+\end{points}
+\end{column}
+\begin{column}{.46\textwidth}
+\lead{共同工作}
+\begin{points}
+\item 统一坐标、帧同步与定位可靠性判定。
+\item 使用同一套指标开展路线对照实验。
+\item 逐步接入真实音色，评估移动端或嵌入式部署。
+\end{points}
+\vspace{.35cm}{\color{FudanBlue}\bfseries 通过真实演奏实验，验证两条路线的适用范围。}
+\end{column}
+\end{columns}
+\end{frame}
+\end{document}
