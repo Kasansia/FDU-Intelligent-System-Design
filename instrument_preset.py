@@ -49,7 +49,10 @@ class InstrumentPreset:
                 points = polygon(value, name, convex=True)
                 if len(points) != 4:
                     raise ValueError(f'{name} must contain four ordered corners')
-                frame_transform(points)  # Reject singular/projectively unstable frames at load.
+                transform = frame_transform(points)
+                if name == 'strum_frame' and self.schema_version == 2 and any(
+                        crosses_projective_horizon(shape, transform) for shape in (self.strum, axis)):
+                    raise ValueError('Strum polygon or axis crosses its local projective horizon')
                 object.__setattr__(self, name, points.tolist())
         # Validate fields with the existing action state machine, without importing it during module initialization.
         from instrument_logic import InteractionConfig
@@ -129,6 +132,12 @@ def frame_transform(points):
             denominator.min()*denominator.max() <= 0):
         raise ValueError('Unstable region coordinate frame')
     return matrix
+
+
+def crosses_projective_horizon(points, matrix):
+    denominators = np.asarray(points) @ matrix[2, :2] + matrix[2, 2]
+    tolerance = 1e-10 * np.max(np.abs(matrix))
+    return not (denominators.min() > tolerance or denominators.max() < -tolerance)
 
 
 def signed_distance(point, points):

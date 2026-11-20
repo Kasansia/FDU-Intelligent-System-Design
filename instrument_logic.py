@@ -64,6 +64,8 @@ class InstrumentLogic:
 
     def _reset_strum(self):
         self.previous = self.anchor = None
+        self.axis_side = None
+        self.axis_contact = False
         self.crossed_axis = False
         self.strum_state = 'unarmed'
 
@@ -176,6 +178,18 @@ class InstrumentLogic:
     def _side(self, v):
         return 'above' if v <= self.config.above_v else 'below' if v >= self.config.below_v else 'crossing'
 
+    def _observe_strum_axis(self, coordinate, crossed):
+        if coordinate == .5:
+            self.axis_contact = self.axis_contact or crossed
+            return
+        side = coordinate > .5
+        if self.axis_side is not None and side != self.axis_side:
+            # The latest change of side must cross the finite axis. A return across
+            # the axis before reaching the opposite threshold undoes an earlier sweep.
+            self.crossed_axis = crossed or self.axis_contact
+        self.axis_side = side
+        self.axis_contact = False
+
     def process(self, perception_packet):
         p, c = perception_packet, self.config
         self.strum_point_uv = self.strum_point_local = self.strum_reason = None
@@ -242,6 +256,7 @@ class InstrumentLogic:
         previous = self.previous
         self.previous = (point, now, tid, board_point)
         if previous is None:
+            self._observe_strum_axis(coordinate, False)
             if side != 'crossing':
                 self.anchor = (side, coordinate, now, board_point)
             self.strum_state = side if self.anchor else 'unarmed'
@@ -253,7 +268,7 @@ class InstrumentLogic:
             self.strum_reason = 'strum_identity_changed' if tid != previous[2] else 'strum_motion_outlier'
             self._reset_strum()
             return self._state('strum_track_changed_or_jump'), []
-        self.crossed_axis = self.crossed_axis or crossed
+        self._observe_strum_axis(coordinate, crossed)
         self.strum_state = side
         if side == 'crossing':
             return self._state(), []

@@ -2,20 +2,28 @@
 const $ = id => document.getElementById(id);
 let latest = null, stopped = false, updating = false;
 let recordingPreferenceSet = false;
-let performanceBusy = false, performanceRevision = 0;
+let performanceBusy = false, expectedPerformance = null;
 const prettyNote = value => String(value).replace(/#/g, '♯').replace(/b/g, '♭');
 
-function renderPerformance(config, disabled) {
+function awaitingPerformance(packet) {
+  return expectedPerformance !== null && packet.service_instance_id === expectedPerformance.service_instance_id &&
+    (!packet.performance || packet.performance.revision < expectedPerformance.revision);
+}
+
+function renderPerformance(packet) {
+  const config = packet?.performance;
   if (!config) return;
+  const disabled = performanceBusy || packet.status !== 'running' || packet.calibrating ||
+    $('calibrationDialog').open || awaitingPerformance(packet);
   const options = (config.tonics || []).map(t=>'<option value="'+escapeText(t)+'">'+prettyNote(t)+'</option>').join('');
   if ($('tonic').innerHTML !== options) $('tonic').innerHTML = options;
   if (!performanceBusy) $('tonic').value = config.tonic;
   for (const [id, mode] of [['modeChord','chord'],['modeMelody','melody']]) {
     $(id).setAttribute('aria-pressed', String(config.mode === mode));
     $(id).classList.toggle('secondary', config.mode !== mode);
-    $(id).disabled = disabled || performanceBusy;
+    $(id).disabled = disabled;
   }
-  $('tonic').disabled = disabled || performanceBusy;
+  $('tonic').disabled = disabled;
   $('performanceHint').textContent = prettyNote(config.tonic)+' 大调 · '+(config.mode === 'chord' ? '七级三和弦' : '七个单音')+' · 左手选音，右手扫弦';
 }
 
@@ -23,22 +31,20 @@ async function changePerformance(mode, tonic) {
   if (performanceBusy || !latest?.performance) return;
   performanceBusy = true;
   $('performanceError').textContent = '';
-  renderPerformance(latest.performance, true);
+  renderPerformance(latest);
   try {
     const r = await fetch('/api/performance', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mode,tonic}), signal:AbortSignal.timeout(3000)});
     if (!r.ok) throw Error(await r.text());
-    const config = await r.json();
-    performanceRevision = config.revision;
+    expectedPerformance = await r.json();
     // Wait for the matching packet/image before updating selection or region labels.
   } catch (e) {$('performanceError').textContent = e.message;}
-  finally {performanceBusy = false;}
+  finally {performanceBusy = false; renderPerformance(latest);}
 }
 const fmt = (n, digits = 1) => Number.isFinite(n) ? n.toFixed(digits) : '—';
 const escapeText = text => String(text).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 function clearLive(message) {
   latest = null;
-  performanceRevision = 0;
   $('status').textContent = message;
   $('video').removeAttribute('src');
   $('waiting').hidden = false;
@@ -146,12 +152,22 @@ function renderStrum(data) {
   $('strumDetail').textContent = side+' · '+(state.strum_point_uv ? (state.strum_in_region ? '指尖在框内' : '指尖在框外') : '未取得指尖位置')+' · 左手保持所选区间';
 }
 
+function renderRecording(data) {
+  $('record').textContent = data.recording ? '停止录制' : '开始录制';
+  $('record').disabled = data.status !== 'running' && !data.recording;
+  $('recordVideo').disabled = !!data.recording;
+  if (!recordingPreferenceSet && data.status === 'running') {
+    $('recordVideo').checked = !!data.recording_default_raw_frames;
+    recordingPreferenceSet = true;
+  }
+  $('recording').textContent = data.recording ? '● 正在录制'+(data.recording_details?.raw_frames ? '原始图像 + 数据' : '节点数据')+'：'+data.last_recording : data.last_recording ? '录制目录：'+data.last_recording : '默认仅录制节点。勾选实验采集可同步保存原始图像。';
+}
+
 function render(data) {
-  if (data.performance && data.performance.revision < performanceRevision) return;
+  const running = data.status === 'running';
   latest = data;
   const board = data.instrument || {}, interaction = data.interaction || {}, audio = data.audio || {};
-  const running = data.status === 'running';
-  renderPerformance(data.performance, !running || data.calibrating || $('calibrationDialog').open);
+  renderPerformance(data);
   renderStrum(data);
   $('status').textContent = running ? '● 本地服务运行中' : data.status === 'error' ? '服务错误' : data.status === 'stopped' ? '服务已停止' : '启动中';
   $('cameraName').textContent = data.camera_name || '等待摄像头';
@@ -176,14 +192,7 @@ function render(data) {
   $('chordStrip').innerHTML = voices.map(v=>'<div class="chord-chip '+(interaction.selection_valid && v.degree === interaction.selected_degree ? 'active' : '')+'">'+escapeText(prettyNote(v.label))+'<small>'+v.degree+' 级</small></div>').join('');
   $('hands').textContent = data.hands.map(h=>(h.handedness === 'Left' ? '左手 / 选音' : '右手 / 扫弦')+' #'+h.track_id+' · '+fmt(h.confidence*100, 0)+'%').join('　') || '等待双手进入画面';
   $('error').textContent = [data.error, audio.error, data.recording_error, data.layout_error].filter(Boolean).join(' · ');
-  $('record').textContent = data.recording ? '停止录制' : '开始录制';
-  $('record').disabled = !running && !data.recording;
-  $('recordVideo').disabled = !!data.recording;
-  if (!recordingPreferenceSet && data.status === 'running') {
-    $('recordVideo').checked = !!data.recording_default_raw_frames;
-    recordingPreferenceSet = true;
-  }
-  $('recording').textContent = data.recording ? '● 正在录制'+(data.recording_details?.raw_frames ? '原始图像 + 数据' : '节点数据')+'：'+data.last_recording : data.last_recording ? '录制目录：'+data.last_recording : '默认仅录制节点。勾选实验采集可同步保存原始图像。';
+  renderRecording(data);
   $('frameInfo').textContent = 'F'+(data.frame_id || 0)+' · '+(data.frame_width || 0)+'×'+(data.frame_height || 0)+' · '+(data.mirrored ? '镜像' : '原始');
   const old = $('selectHand').value;
   const options = data.hands.map(h=>'<option value="'+h.track_id+'">'+h.handedness+' #'+h.track_id+'</option>').join('');
@@ -199,15 +208,15 @@ async function update() {
     const response = await fetch('/api/snapshot', {signal:AbortSignal.timeout(3000)});
     if (!response.ok) throw Error('HTTP '+response.status);
     const {packet, image_base64:image} = await response.json();
-    if (packet.performance && packet.performance.revision < performanceRevision) return;
+    if (stopped) return;
     if (packet.status === 'running' && Date.now()/1000-packet.timestamp_unix_s > 1) throw Error('画面已过期');
     if (image && packet.status === 'running') {
+      if (awaitingPerformance(packet)) return;
       // One response carries one immutable packet/JPEG pair. No JS geometry or inference.
       const next = new Image();
       next.src = 'data:image/jpeg;base64,'+image;
       await next.decode();
-      if (stopped) return;
-      if (packet.performance && packet.performance.revision < performanceRevision) return;
+      if (stopped || awaitingPerformance(packet)) return;
       $('video').src = next.src;
       $('waiting').hidden = true;
       render(packet);
@@ -233,7 +242,11 @@ $('record').onclick = async () => {
     $('record').disabled = true;
     const r = await fetch('/api/record/'+(latest?.recording ? 'stop' : 'start'), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({raw_frames:$('recordVideo').checked})});
     if (!r.ok) throw Error(await r.text());
-    render(await r.json());
+    const state = await r.json();
+    if (latest && latest.service_instance_id === state.service_instance_id) {
+      latest = {...latest, recording:state.recording};
+      renderRecording(state);
+    }
   } catch (e) {$('error').textContent = e.message; $('record').disabled = false;}
 };
 $('stop').onclick = async () => {

@@ -43,18 +43,21 @@ recordings never undergo this live upgrade.
 
 ## Performance settings and musical events
 
-GET `/api/performance` returns `mode`, `tonic`, `revision`, `tonics` and seven
+GET `/api/performance` returns `mode`, `tonic`, `revision`, `service_instance_id`, `tonics` and seven
 `voices` (`degree`, `label`, `chord`, `notes_midi`). POST the complete object
 `{"mode":"melody","tonic":"D"}` to update. Modes: `chord`, `melody`. Tonics:
 `C, Db, D, Eb, E, F, F#, G, Ab, A, Bb, B` (ASCII wire spelling). Invalid bodies and
-changes during calibration return 400; GET before startup/after stop returns 409.
+changes during calibration return 400. GET and POST return 409 while the worker
+is unavailable.
 Controls use the existing same-origin and loopback restrictions. No-op updates
 retain revision. Real changes increment it; settings live until service restart.
 
-Native snapshots include `performance` and `layout.degree_regions`. Snapshot settings
-belong to the same immutable frame/JPEG; following a POST, wait for a snapshot with
-its returned revision before drawing the new settings. Clients use the server's
-spelled voice labels. Defaults are chord/C, revision 0.
+Native snapshots include `performance`, `layout.degree_regions`, and a top-level
+`service_instance_id`. Snapshot settings belong to the same immutable frame/JPEG.
+Following a POST, wait for a live frame with the returned revision or newer for
+that service instance before drawing the new settings. Each restart generates a
+new instance ID and restores chord/C and revision 0. Clients use the server's
+spelled voice labels.
 
 Interaction adds `selected_degree`, `selected_label`, `selection_valid`,
 `candidate_degree`, `candidate_label`, `selection_point_uv`, `selection_reason`,
@@ -73,6 +76,8 @@ Recording configurations include `performance` (mode/tonic/revision). Replay res
 it at frame boundaries and does not reconstruct the plane tracker for music-only
 changes. Missing performance data means historical chord/C semantics and original
 four-chord voicings. Old v1 geometry remains unmodified during replay.
+Replay preserves pauses recorded as `calibration_in_progress` or
+`layout_requires_calibration`.
 
 ## Fingertip selection and strum trajectories
 
@@ -180,9 +185,11 @@ Sec-Fetch-Site protections. Bodies are JSON, calibration limit 16 KiB. Errors
 are UTF-8 HTTP 400; I/O failures HTTP 500; unauthorized control HTTP 403.
 
 1. `POST /api/calibration/capture {}` → session_id, source frame_id, frame_width,
-   frame_height, mirrored, visible_ids, image_base64, expires_in_s. Copies raw
-   image and same-packet detections atomically under the pipeline lock. Only one
-   frozen session exists; new capture invalidates the previous ID. TTL 600 s.
+   frame_height, mirrored, visible_ids, image_base64, expires_in_s and
+   suggested_board_id. The suggestion is available in both boards and presets
+   at the time of capture. Copies raw image and same-packet detections atomically
+   under the pipeline lock. Only one frozen session exists; new capture
+   invalidates the previous ID. TTL 600 s.
    At least two distinct sufficiently large/contrasty/sharp markers are required.
 2. Browser maps canvas pointer positions through object-fit containment and
    inverse reflection to original raw pixels. Letterbox clicks are ignored.
@@ -193,7 +200,7 @@ are UTF-8 HTTP 400; I/O failures HTTP 500; unauthorized control HTTP 403.
    and four-point selection support perspective quadrilaterals. Both regions
    must lie on the same rigid plane, must not overlap, and must pass minimum
    area/edge/convexity checks. The chord quadrilateral establishes a positively
-   oriented board frame; its four chord cells and the strum center line are
+   oriented board frame; its seven selection cells and the strum center line are
    stored separately in a generated preset with local coordinate frames.
    The board support outline includes both selected regions for pose checks.
    Response: board, preset, pose_quality, backend-rendered preview JPEG and

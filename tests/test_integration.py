@@ -22,6 +22,7 @@ from pipeline import PerceptionPipeline, annotate_instrument
 from recording import Recorder, COLUMNS
 from synthetic_input import SyntheticHandTracker, board_image
 from tests.helpers import packet
+from tools.verify_runtime import check_synthetic_coverage
 
 
 class IntegrationTests(unittest.TestCase):
@@ -48,11 +49,16 @@ class IntegrationTests(unittest.TestCase):
                     self.assertEqual(np.shape(p['hands'][0]['landmarks_instrument_uv']), (21, 2))
                     json.dumps(p, allow_nan=False)
                     events.extend(p['events'])
-                self.assertEqual({e['chord'] for e in events}, {'C', 'Dm', 'Em', 'F', 'G', 'Am', 'Bdim'})
-                self.assertEqual({e['direction'] for e in events}, {'up', 'down'})
+                check_synthetic_coverage({e['chord'] for e in events}, {e['direction'] for e in events})
                 self.assertEqual(events, backend.events)
                 self.assertEqual(len({e['event_id'] for e in events}), len(events))
                 self.assertEqual(annotate_instrument(display, p, layout).shape, frame.shape)
+
+    def test_runtime_acceptance_rejects_incomplete_chords_or_strums(self):
+        with self.assertRaises(RuntimeError):
+            check_synthetic_coverage(['C', 'G', 'Am', 'F'], ['up', 'down'])
+        with self.assertRaises(RuntimeError):
+            check_synthetic_coverage(['C', 'Dm', 'Em', 'F', 'G', 'Am', 'Bdim'], ['down'])
 
     def test_real_onnx_plus_markers_and_anatomical_labels(self):
         sample = ROOT/'outputs/test_hands.jpg'

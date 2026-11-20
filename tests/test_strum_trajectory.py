@@ -78,6 +78,33 @@ class TrajectoryTests(unittest.TestCase):
         for i in range(6):
             self.assertEqual(self.step(.32+i*.03, y=.5+(-1)**i*.025)[1], [])
 
+    def test_return_across_axis_clears_pending_crossing_in_both_directions(self):
+        for direction in (-1, 1):
+            with self.subTest(direction=direction):
+                self.setup_logic()
+                self.arm(.5-.2*direction, x=.90)
+                self.assertEqual(self.step(.16, x=.90, y=.5+.02*direction)[1], [])
+                self.assertEqual(self.step(.19, x=.90, y=.5-.02*direction)[1], [])
+                self.assertEqual(self.step(.23, x=1.15, y=.5-.02*direction)[1], [])
+                state, events = self.step(.27, x=1.15, y=.5+.16*direction)
+                self.assertEqual(events, [])
+                self.assertEqual(state['strum_reason'], 'strum_missed_axis')
+
+    def test_axis_touch_keeps_the_approach_side_until_the_next_sample(self):
+        self.setup_logic()
+        self.arm(.30, x=1.15)
+        self.assertEqual(self.step(.16, x=1.15, y=.52)[1], [])
+        self.assertEqual(self.step(.20, x=.90, y=.52)[1], [])
+        self.assertEqual(self.step(.24, x=.90, y=.50)[1], [])
+        state, events = self.step(.28, x=.90, y=.65)
+        self.assertEqual(events, [])
+        self.assertEqual(state['strum_reason'], 'strum_missed_axis')
+
+        self.setup_logic()
+        self.arm(.30)
+        self.assertEqual(self.step(.21, y=.50)[1], [])
+        self.assertEqual(self.step(.29, y=.65)[1][0]['direction'], 'down')
+
     def test_missing_data_and_outliers_cannot_be_bridged(self):
         for failure in ({'right':False}, {'left':False}, {'board':'held'}, {'board':'lost'}, {'identity':8}):
             self.setup_logic()

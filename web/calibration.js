@@ -19,10 +19,11 @@ if (typeof module !== 'undefined') module.exports = {calibrationRawPoint, calibr
 
 if (typeof document !== 'undefined') {
   const el = id => document.getElementById(id);
-  const dialog = el('calibrationDialog'), canvas = el('calibrationCanvas');
+  const dialog = el('calibrationDialog'), canvas = el('calibrationCanvas'), boardName = el('boardName');
   const labels = {chord:'选音区', strum:'拨弦区'}, colors = {chord:'#99e5bb', strum:'#f9c56d'};
   let session = null, regions = {chord:[], strum:[]}, active = 'chord', history = [], drag = null;
   let frozenImage = null, previewImage = null, previewToken = null, busy = false;
+  let boardNameEdited = false;
   const copy = value => JSON.parse(JSON.stringify(value));
   const displayPoint = p => [session.mirrored ? canvas.width - 1 - p[0] : p[0], p[1]];
   const rawPoint = event => calibrationRawPoint(event.clientX, event.clientY, canvas.getBoundingClientRect(), canvas.width, canvas.height, session.mirrored);
@@ -73,6 +74,7 @@ if (typeof document !== 'undefined') {
   el('calibrate').onclick = () => {dialog.showModal(); draw();};
   el('calibrationCapture').onclick = () => work(async () => {
     const captured = await request('capture');
+    if (!boardNameEdited && captured.suggested_board_id) boardName.value = captured.suggested_board_id;
     session = captured; regions = {chord:[], strum:[]}; active = 'chord'; history = [];
     frozenImage = previewImage = previewToken = null;
     canvas.width = captured.frame_width; canvas.height = captured.frame_height;
@@ -115,15 +117,16 @@ if (typeof document !== 'undefined') {
   canvas.onlostpointercapture = event => finishDrag(event, true);
   el('calibrationUndo').onclick = () => {const previous = history.pop(); if (previous) {regions = previous.regions; active = previous.active;} changed();};
   el('calibrationReset').onclick = () => {remember(); regions[active] = []; changed();};
-  el('boardName').oninput = changed;
+  boardName.oninput = () => {boardNameEdited = true; changed();};
   el('calibrationPreview').onclick = () => work(async () => {
     previewToken = previewImage = null;
-    const data = await request('preview', {session_id:session.session_id, regions_raw:regions, board_id:el('boardName').value});
+    const data = await request('preview', {session_id:session.session_id, regions_raw:regions, board_id:boardName.value});
     previewImage = await loadImage(data.image_base64); previewToken = data.preview_token;
-    el('calibrationError').textContent = '预览有效：请检查四个和弦格与拨弦中线，再确认保存。';
+    el('calibrationError').textContent = '预览有效：请检查七个选音格与拨弦中线，再确认保存。';
   });
   el('calibrationSave').onclick = () => work(async () => {
     const data = await request('save', {session_id:session.session_id, preview_token:previewToken});
+    boardNameEdited = false;
     clear(); dialog.close();
     el('calibrationSaved').hidden = false;
     el('calibrationSaved').textContent = `已保存并启用板面 ${data.saved} 与区域 ${data.preset_saved}。重启时使用 --board ${data.saved} 即可恢复。`;

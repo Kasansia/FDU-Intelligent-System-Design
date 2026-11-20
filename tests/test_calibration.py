@@ -85,6 +85,21 @@ class CalibrationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 sessions.capture(image, p)
 
+    def test_capture_suggests_name_available_in_board_and_preset_directories(self):
+        with tempfile.TemporaryDirectory() as root:
+            boards, presets = Path(root)/'boards', Path(root)/'presets'
+            boards.mkdir()
+            presets.mkdir()
+            sessions = CalibrationSessions(boards)
+            image = render_board()
+            packet = frozen_packet(image)
+
+            self.assertEqual(sessions.capture(image, packet)['suggested_board_id'], 'custom_board')
+            (boards/'custom_board.json').write_text('existing board', encoding='utf-8')
+            self.assertEqual(sessions.capture(image, packet)['suggested_board_id'], 'custom_board_2')
+            (presets/'custom_board_2.json').write_text('existing preset', encoding='utf-8')
+            self.assertEqual(sessions.capture(image, packet)['suggested_board_id'], 'custom_board_3')
+
 
 class CalibrationHTTPTests(unittest.TestCase):
     setUp = test_integration.HTTPTests.setUp

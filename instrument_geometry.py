@@ -6,7 +6,7 @@ UV is a 2-D image projection, not a contact or depth measurement.
 from dataclasses import dataclass
 from copy import deepcopy
 import numpy as np
-from instrument_preset import InstrumentPreset, signed_distance, frame_transform
+from instrument_preset import InstrumentPreset, crosses_projective_horizon, frame_transform, signed_distance
 
 CHORDS = ('C', 'G', 'Am', 'F')
 BOARD_UV = np.float32(((0, 0), (1, 0), (0, 1), (1, 1)))
@@ -88,8 +88,13 @@ class InstrumentLayout:
         axis = self.preset.axis if strum_transform is None else project(self.preset.axis, strum_transform)
         if any(points is None for points in chords.values()) or axis is None:
             raise ValueError('Region or axis crosses its local projective horizon')
+        strum = self.preset.strum
+        if strum_transform is not None:
+            # A historical preset can rely on board-space band checks during replay.
+            strum = None if crosses_projective_horizon(strum, strum_transform) else project(strum, strum_transform)
         object.__setattr__(self, '_chords', chords)
         object.__setattr__(self, '_axis', np.asarray(axis))
+        object.__setattr__(self, '_strum_polygon', strum)
 
     def local(self, point):
         u, v = point
@@ -128,11 +133,13 @@ class InstrumentLayout:
 
     def in_strum_tracking_zone(self, point, margin=.35):
         """Observe approach/departure, but require an actual finite-axis crossing to play."""
-        polygon = self.preset.strum if self._strum_transform is None else project(self.preset.strum, self._strum_transform)
-        return signed_distance(self.strum_motion_point(point), polygon) >= -margin-1e-8
+        return (self._strum_polygon is not None and
+                signed_distance(self.strum_motion_point(point), self._strum_polygon) >= -margin-1e-8)
 
     def strum_path_crosses(self, first, second):
         """Does the observed segment intersect the finite strum axis inside its region?"""
+        if self._strum_polygon is None:
+            return False
         p, q = self.strum_motion_point(first), self.strum_motion_point(second)
         if not np.isfinite([p, q]).all():
             return False
@@ -144,8 +151,7 @@ class InstrumentLayout:
         t, u = cross(a-p, b-a)/denominator, cross(a-p, q-p)/denominator
         if not (0 <= t <= 1 and 0 <= u <= 1):
             return False
-        polygon = self.preset.strum if self._strum_transform is None else project(self.preset.strum, self._strum_transform)
-        return signed_distance(p+t*(q-p), polygon) >= -1e-8
+        return signed_distance(p+t*(q-p), self._strum_polygon) >= -1e-8
 
     def strum_coordinate(self, point):
         """Signed distance along the directed axis normal; .5 keeps v-threshold compatibility."""

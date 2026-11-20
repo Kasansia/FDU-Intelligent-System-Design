@@ -8,6 +8,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
+from uuid import uuid4
 import cv2 as cv
 from hand_tracking import ROOT, HandTracker
 from pipeline import PerceptionPipeline, annotate_instrument
@@ -29,6 +30,7 @@ LOG = logging.getLogger('motionmuse')
 class Service:
     def __init__(self, args):
         self.args = args
+        self.service_instance_id = uuid4().hex
         self.lock = threading.RLock()
         self.record_control = threading.Lock()
         self.pipeline_lock = threading.RLock()
@@ -84,7 +86,10 @@ class Service:
             if self.audio is not None:
                 result['audio'] = self.audio.snapshot()
                 result['audio_status'] = result['audio']['status']
-            return legacy_packet(result) if schema_version == 2 else result
+            if schema_version == 2:
+                return legacy_packet(result)
+            result['service_instance_id'] = self.service_instance_id
+            return result
 
     def snapshot(self):
         with self.lock:
@@ -211,24 +216,23 @@ class Service:
         return InteractionConfig(**data)
 
     def performance_request(self, body=None):
-        with self.pipeline_lock:
-            if self.pipeline is None or self.stop.is_set():
-                raise ValueError('演奏服务尚未就绪')
+        with self.pipeline_lock, self.lock:
+            if self.pipeline is None or self.stop.is_set() or self.packet['status'] != 'running':
+                return None
             current = self.pipeline.logic.performance
-            if body is None:
-                return current.snapshot()
-            if self.calibration.active():
-                raise ValueError('标定期间不能切换模式或调性')
-            if not isinstance(body, dict) or set(body) != {'mode', 'tonic'}:
-                raise ValueError('Expected mode and tonic')
-            updated = Performance(body['mode'], body['tonic'], current.revision+1)
-            if (updated.mode, updated.tonic) == (current.mode, current.tonic):
-                return current.snapshot()
-            self.pipeline.logic.set_performance(updated)
-            if self.audio is not None:
-                self.audio.set_performance_revision(updated.revision)
+            if body is not None:
+                if self.calibration.active():
+                    raise ValueError('标定期间不能切换模式或调性')
+                if set(body) != {'mode', 'tonic'}:
+                    raise ValueError('Expected mode and tonic')
+                updated = Performance(body['mode'], body['tonic'], current.revision+1)
+                if (updated.mode, updated.tonic) != (current.mode, current.tonic):
+                    self.pipeline.logic.set_performance(updated)
+                    if self.audio is not None:
+                        self.audio.set_performance_revision(updated.revision)
+                    current = updated
             # Publish settings with the next matching image; old snapshots keep their revision.
-            return updated.snapshot()
+            return dict(current.snapshot(), service_instance_id=self.service_instance_id)
 
     def calibration_request(self, action, body):
         with self.pipeline_lock:
@@ -287,6 +291,13 @@ def handler_for(service):
             self.end_headers()
             self.wfile.write(content)
 
+        def send_performance(self, body=None):
+            result = service.performance_request(body)
+            if result is None:
+                self.send(409, b'Performance service not ready', 'text/plain')
+            else:
+                self.send(200, json.dumps(result, allow_nan=False).encode(), 'application/json')
+
         def do_GET(self):
             path = urlparse(self.path).path
             try:
@@ -304,10 +315,7 @@ def handler_for(service):
                     body = {'packet': packet, 'image_base64': base64.b64encode(jpeg).decode() if jpeg else None}
                     self.send(200, json.dumps(body, allow_nan=False).encode(), 'application/json')
                 elif path == '/api/performance':
-                    if service.pipeline is None or service.stop.is_set():
-                        self.send(409, b'Performance service not ready', 'text/plain')
-                    else:
-                        self.send(200, json.dumps(service.performance_request(), allow_nan=False).encode(), 'application/json')
+                    self.send_performance()
                 elif path == '/frame.jpg':
                     packet, jpeg = service.snapshot()
                     self.send(200 if jpeg else 503, jpeg or b'Camera not ready',
@@ -334,8 +342,10 @@ def handler_for(service):
                     length = int(self.headers.get('Content-Length', '0'))
                     if not 0 < length <= 1024:
                         raise ValueError('Performance request must be 1..1024 bytes')
-                    result = service.performance_request(json.loads(self.rfile.read(length)))
-                    self.send(200, json.dumps(result, allow_nan=False).encode(), 'application/json')
+                    body = json.loads(self.rfile.read(length))
+                    if not isinstance(body, dict):
+                        raise ValueError('Expected a JSON object')
+                    self.send_performance(body)
                     return
                 elif path.startswith('/api/calibration/'):
                     length = int(self.headers.get('Content-Length', '0'))

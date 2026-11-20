@@ -120,8 +120,9 @@ def replay_recording(directory, output, board_override=None, preset_override=Non
                               performance=logic.performance.snapshot(),
                               replay_hands='rerun_onnx' if rerun_hands else 'recorded_landmarks',
                               vision_total_ms=round((time.perf_counter()-started)*1000, 3))
-                if original.get('interaction', {}).get('reason') == 'calibration_in_progress':
-                    packet['interaction'], packet['events'] = logic.invalidate('calibration_in_progress'), []
+                recorded_reason = original.get('interaction', {}).get('reason')
+                if recorded_reason in ('calibration_in_progress', 'layout_requires_calibration'):
+                    packet['interaction'], packet['events'] = logic.invalidate(recorded_reason), []
                 else:
                     packet['interaction'], packet['events'] = logic.process(packet)
                 events.extend(packet['events'])

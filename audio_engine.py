@@ -181,12 +181,28 @@ class AudioEngine:
                 return False
 
     def set_performance_revision(self, revision):
-        """Small control update; the callback owns voice fading and stale queue draining."""
+        """Clear pending old events; leave active voices to the audio callback."""
         with self.submit_lock:
+            if revision == self.performance_revision:
+                return
             self.performance_revision = revision
+            while True:
+                try:
+                    self.queue.get_nowait()
+                except queue.Empty:
+                    break
+                self.dropped += 1
 
     def render(self, frames):
         # Sole owner of voices: audio callback (or explicitly driven mock).
+        events = []
+        for _ in range(self.queue.maxsize):
+            try:
+                events.append(self.queue.get_nowait())
+            except queue.Empty:
+                break
+        # Read the settings after dequeuing so the batch can include concurrent
+        # submissions from a new revision. Later changes apply to the next buffer.
         now = self.clock()
         revision = self.performance_revision
         if revision != self.render_revision:
@@ -194,11 +210,7 @@ class AudioEngine:
             self.voices = []
             self.fade_remaining = max(1, int(self.sample_rate*.01))
             self.render_revision = revision
-        for _ in range(self.queue.maxsize):
-            try:
-                event = self.queue.get_nowait()
-            except queue.Empty:
-                break
+        for event in events:
             age = now - event['timestamp_monotonic_s']
             if event.get('performance_revision', 0) != revision or age < -.01 or age > self.max_event_age_s:
                 self.dropped += 1

@@ -45,6 +45,14 @@ class CalibrationSessions:
         self.lock = threading.RLock()
         self.session = None  # At most one frozen frame in memory.
 
+    def _suggest_board_id(self):
+        directories = (self.directory, self.directory.parent/'presets')
+        index, name = 1, 'custom_board'
+        while any(os.path.lexists(directory/(name+'.json')) for directory in directories):
+            index += 1
+            name = f'custom_board_{index}'
+        return name
+
     def capture(self, raw, packet):
         with self.lock:
             if raw is None or packet.get('status') != 'running':
@@ -71,7 +79,8 @@ class CalibrationSessions:
             display = cv.flip(raw, 1) if packet['mirrored'] else raw
             return dict(session_id=sid, frame_id=packet['frame_id'], frame_width=raw.shape[1],
                         frame_height=raw.shape[0], mirrored=packet['mirrored'],
-                        visible_ids=sorted(counts), image_base64=encode_preview(display), expires_in_s=self.ttl_s)
+                        visible_ids=sorted(counts), image_base64=encode_preview(display), expires_in_s=self.ttl_s,
+                        suggested_board_id=self._suggest_board_id())
 
     def _get(self, sid):
         if self.session is None or not secrets.compare_digest(str(sid), self.session['id']):

@@ -2,7 +2,7 @@ import unittest
 import numpy as np
 from instrument_preset import InstrumentPreset
 from instrument_geometry import InstrumentLayout, overlay_polygons, project, display_to_raw_xy
-from instrument_logic import InstrumentLogic
+from instrument_logic import InstrumentLogic, InteractionConfig
 from tests.helpers import packet
 from tests.plane_fixtures import six_marker_board
 
@@ -51,3 +51,29 @@ class PresetTests(unittest.TestCase):
                        {'strum_frame': [[0, 0], [1, 1], [1, 0], [0, 1]]}):
             with self.assertRaises(ValueError):
                 InstrumentPreset.from_dict(dict(data, **change))
+
+    def test_strum_horizon_is_rejected_for_new_presets_and_safe_for_legacy(self):
+        frame = [[0, 0], [2, 0], [1.5, 1], [.5, 1]]
+        axis = [[.2, .5], [1.8, .5]]
+        data = InstrumentPreset.default().to_dict()
+        for bottom in (2, 2.2):
+            with self.subTest(bottom=bottom):
+                strum = [[-.1, -.1], [2.1, -.1], [2.1, bottom], [-.1, bottom]]
+                with self.assertRaisesRegex(ValueError, 'local projective horizon'):
+                    InstrumentPreset.from_dict(dict(data, strum=strum, axis=axis, strum_frame=frame))
+
+        chords = {'C': [[.04, .2], [.18, .2], [.18, .8], [.04, .8]]}
+        legacy = InstrumentPreset('legacy', chords, strum, axis, strum_frame=frame)
+        layout = InstrumentLayout(preset=legacy)
+        for path_enabled in (False, True):
+            with self.subTest(path_enabled=path_enabled):
+                now = [0.]
+                logic = InstrumentLogic(layout, InteractionConfig(strum_path_enabled=path_enabled), clock=lambda: now[0])
+                for t, y in ((0, .35), (.11, .35), (.21, .65)):
+                    now[0] = t
+                    state, events = logic.process(packet(t, right=(1, y)))
+                if path_enabled:
+                    self.assertEqual(events, [])
+                    self.assertEqual(state['strum_reason'], 'outside_strum_zone')
+                else:
+                    self.assertEqual([event['direction'] for event in events], ['down'])

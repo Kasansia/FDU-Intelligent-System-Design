@@ -125,6 +125,39 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(backend.events[-1]['notes_midi'], [78])
         self.assertFalse(engine.submit(sound_event(Performance('melody', 'G', 1), 7, 4)))
 
+    def test_settings_change_while_callback_dequeues(self):
+        backend = MockAudioBackend()
+        engine = AudioEngine(backend, sample_rate=8000, clock=lambda: 1.)
+        self.addCleanup(engine.close)
+        self.assertTrue(engine.submit(sound_event(Performance(), 1)))
+        get_nowait = engine.queue.get_nowait
+
+        def switch_before_dequeue():
+            dequeue.side_effect = get_nowait
+            engine.set_performance_revision(1)
+            self.assertTrue(engine.submit(sound_event(Performance('melody', 'D', 1), 2, 2)))
+            return get_nowait()
+
+        with patch.object(engine.queue, 'get_nowait', side_effect=switch_before_dequeue) as dequeue:
+            backend.pump()
+        self.assertEqual([event['event_id'] for event in backend.events], [2])
+        self.assertEqual(engine.snapshot()['dropped_events'], 1)
+
+    def test_settings_change_frees_full_queue_before_next_callback(self):
+        backend = MockAudioBackend()
+        engine = AudioEngine(backend, sample_rate=8000, queue_size=1, clock=lambda: 1.)
+        self.addCleanup(engine.close)
+        self.assertTrue(engine.submit(sound_event(Performance(), 1)))
+        engine.set_performance_revision(0)
+        self.assertEqual(engine.snapshot()['queue_depth'], 1)
+
+        current = Performance('melody', 'D', 1)
+        engine.set_performance_revision(current.revision)
+        self.assertTrue(engine.submit(sound_event(current, 2, 2)))
+        backend.pump()
+        self.assertEqual([event['event_id'] for event in backend.events], [2])
+        self.assertEqual(engine.snapshot()['dropped_events'], 1)
+
     def test_melody_seven_cells_both_mirrors_and_missing_hands(self):
         for flip in (False, True):
             layout = InstrumentLayout(flip_u=flip)
@@ -237,6 +270,30 @@ class CompatibilityTests(unittest.TestCase):
             for event in events:
                 self.assertEqual(event['notes_midi'], list(LEGACY_NOTES[event['chord']]))
 
+    def test_layout_requiring_calibration_stays_silent_in_replay(self):
+        old = legacy_preset()
+        preset = InstrumentPreset('custom', {'C': old.chords['C']}, old.strum, old.axis)
+        layout = InstrumentLayout(preset=preset)
+        with tempfile.TemporaryDirectory() as root:
+            now = [1.]
+            pipeline = PerceptionPipeline(hands=SyntheticHandTracker(layout=layout), layout=layout,
+                                          logic=InstrumentLogic(layout, clock=lambda: now[0]))
+            recorder = Recorder(root, raw_frames=True)
+            raw = board_image()
+            for i in range(18):
+                now[0] = 1+i*.08
+                _, frame = pipeline.process(raw, 1000+i*.08, now[0], interaction_enabled=False)
+                frame['interaction'] = pipeline.logic.invalidate('layout_requires_calibration')
+                self.assertTrue(recorder.submit(frame, raw, pipeline.configuration()))
+            recorder.close()
+            target = Path(root)/'replay.jsonl'
+            result = replay_recording(recorder.folder, target)
+            self.assertEqual(result['frames'], 18)
+            self.assertEqual(result['generated_events'], 0)
+            self.assertEqual(result['audio']['played_events'], 0)
+            self.assertEqual({frame['interaction']['reason'] for frame in json_lines(target)},
+                             {'layout_requires_calibration'})
+
 
 class PerformanceHTTPTests(unittest.TestCase):
     setUp = test_integration.HTTPTests.setUp
@@ -252,15 +309,21 @@ class PerformanceHTTPTests(unittest.TestCase):
         deadline = time.monotonic()+5
         while self.service.latest()['status'] == 'starting' and time.monotonic() < deadline:
             self.service.stop.wait(.01)
-        self.assertEqual(self.request()['mode'], 'chord')
+        initial = self.request()
+        self.assertEqual(initial['mode'], 'chord')
+        self.assertTrue(initial['service_instance_id'])
         changed = self.request({'mode': 'melody', 'tonic': 'D'})
         self.assertEqual(changed['revision'], 1)
+        self.assertEqual(changed['service_instance_id'], initial['service_instance_id'])
         self.assertEqual(self.request(), changed)
         self.assertEqual(self.request({'mode': 'melody', 'tonic': 'D'})['revision'], 1)
         for bad in ({'mode': 'minor', 'tonic': 'C'}, {'mode': 'chord', 'tonic': 'H'}, {'tonic': 'C'}, []):
             with self.assertRaises(HTTPError) as error:
                 self.request(bad)
             self.assertEqual(error.exception.code, 400)
+        with self.assertRaises(HTTPError) as error:
+            urlopen(Request(self.url+'/api/performance', data=b'null'), timeout=3)
+        self.assertEqual(error.exception.code, 400)
         with self.assertRaises(HTTPError) as error:
             self.request({'mode': 'chord', 'tonic': 'C'}, {'Origin': 'https://evil.invalid'})
         self.assertEqual(error.exception.code, 403)
@@ -275,3 +338,17 @@ class PerformanceHTTPTests(unittest.TestCase):
             self.service.stop.wait(.01)
         self.assertEqual(state['performance']['tonic'], 'D')
         self.assertEqual(len(state['layout']['degree_regions']), 7)
+        self.assertEqual(state['service_instance_id'], initial['service_instance_id'])
+        self.assertEqual(self.service.snapshot()[0]['service_instance_id'], initial['service_instance_id'])
+
+    def test_controls_reject_requests_after_worker_ends_on_its_own(self):
+        self.service.args.duration = .1
+        self.service.worker.start()
+        self.service.worker.join(timeout=5)
+        self.assertFalse(self.service.worker.is_alive())
+        self.assertFalse(self.service.stop.is_set())
+        self.assertEqual(self.service.latest()['status'], 'stopped')
+        for body in (None, {'mode': 'melody', 'tonic': 'D'}):
+            with self.assertRaises(HTTPError) as error:
+                self.request(body)
+            self.assertEqual(error.exception.code, 409)

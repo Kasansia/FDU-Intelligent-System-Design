@@ -67,11 +67,11 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1
 1. 打印 `outputs/markers/` 中的标记，保持白边、不镜像。把不同 ID 分散贴在同一刚性平面上；位置、旋转和板子外轮廓可自由选择。默认字典 `DICT_4X4_50` 支持 0–49；配置与测试覆盖 1–12 枚，单枚只能降级显示。建议至少 3 枚、实际布置 4–6 枚以增加遮挡余量。
 2. 打开 [本地演奏台](http://127.0.0.1:8765/)，点击 **划定演奏区域 → 捕获**。至少两枚分散、清晰、完整的标记应同时可见。画面冻结，演奏暂停。
 3. 在同一刚性板面上分别拖出 **选音区** 和 **拨弦区**，位置和大小独立选择，无需再选外层板面矩形。也可切换为“依次点选四角”，按画面中的 **左上 → 右上 → 右下 → 左下** 点选，并拖动已有角点贴合倾斜板面。镜像显示时直接按看到的位置操作。两个区域须为不重叠的有效凸四边形，不能随两个物体独立移动。
-4. 选音区沿第一、第二角点方向自动分成 1～7 七格；拨弦区生成横向中线，从所选区域上半部跨向下半部为 down。可撤销、重选当前区域或重新捕获。填写英文/数字/下划线/连字符名称，点击 **预览**检查区域，然后 **确认保存并启用**。例如同时保存 `config/boards/my_board.json` 和 `config/presets/my_board.json`，相同名称不会覆盖。取消不改变当前板面和区域。冻结会话 10 分钟过期，过期后自动退出演奏暂停。
+4. 选音区沿第一、第二角点方向自动分成 1～7 七格；拨弦区生成横向中线，从所选区域上半部跨向下半部为 down。可撤销、重选当前区域或重新捕获。可以使用捕获时建议的可用名称，也可以自定义含英文、数字、下划线或连字符的名称。点击 **预览**检查区域，然后 **确认保存并启用**。例如同时保存 `config/boards/custom_board.json` 和 `config/presets/custom_board.json`，相同名称不会覆盖。取消不改变当前板面和区域。冻结会话 10 分钟过期，过期后自动退出演奏暂停。
 5. 重启时只需加载板面配置，会自动加载关联的区域预设；请一起保留 `boards/` 与同级 `presets/` 下的两个文件：
 
 ```powershell
-.\.venv\Scripts\python.exe app.py --board config/boards/my_board.json
+.\.venv\Scripts\python.exe app.py --board config/boards/custom_board.json
 ```
 
 显式传入 `--preset` 可覆盖关联预设；没有关联预设的旧板面继续使用默认吉他布局。网页重新划定区域会直接启用所选位置，原来的 `--layout flip-u` 不会再次翻转这次选择。板面坐标是投影 UV，不保证等距或正交测量。
@@ -177,6 +177,7 @@ UV 是二维成像投影，不表示手指接触板面。原模型 z/world_m 是
 node --check web/app.js
 node --check web/calibration.js
 node tests/frontend_coordinates.cjs
+node tests/frontend_performance.cjs
 ```
 
 分析报告包括定位状态占比、可见数量分布、重投影误差、UV 帧间位移、恢复时长及视觉耗时。只有手与板固定相对关系时，UV 帧间位移才可解释为抖动。合成实验和 PC 耗时不代表 Jetson 实机演奏性能。

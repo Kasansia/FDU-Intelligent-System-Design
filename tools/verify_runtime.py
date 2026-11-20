@@ -21,6 +21,13 @@ from synthetic_input import SyntheticHandTracker, board_image
 from timing import monotonic_s
 
 
+def check_synthetic_coverage(chords, directions):
+    expected_chords = {'C', 'Dm', 'Em', 'F', 'G', 'Am', 'Bdim'}
+    if set(chords) != expected_chords or set(directions) != {'up', 'down'}:
+        raise RuntimeError(f'Expected all seven C-major chords and both strum directions; '
+                           f'observed chords={sorted(chords)}, directions={sorted(directions)}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=['synthetic', 'onnx'], default='synthetic')
@@ -102,8 +109,8 @@ def main():
             raise RuntimeError('Runtime acceptance failed; see report')
         if args.mode == 'onnx' and events:
             raise RuntimeError('Static photograph caused a false strum')
-        if args.mode == 'synthetic' and args.seconds >= 12 and (len(report['chords']) != 4 or len(report['directions']) != 2):
-            raise RuntimeError('Synthetic trajectory did not cover four chords and both directions')
+        if args.mode == 'synthetic' and args.seconds >= 12:
+            check_synthetic_coverage(report['chords'], report['directions'])
     finally:
         recorder.close()
         audio.close()
